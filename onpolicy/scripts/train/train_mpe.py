@@ -7,31 +7,44 @@ import setproctitle
 import numpy as np
 from pathlib import Path
 import torch
+
+sys.path.append("/home/ubuntu/sunfeng/MARL/on-policy/")
+
+os.environ["WANDB_API_KEY"] = "5cbfb4a55c02160ace928671880a8127c19936c4"
+
+
 from onpolicy.config import get_config
 from onpolicy.envs.mpe.MPE_env import MPEEnv
 from onpolicy.envs.env_wrappers import SubprocVecEnv, DummyVecEnv
 
 """Train script for MPEs."""
-
 def make_train_env(all_args):
+    """
+    创建训练环境
+    """
     def get_env_fn(rank):
         def init_env():
             if all_args.env_name == "MPE":
-                env = MPEEnv(all_args)
+                env = MPEEnv(all_args)  # *****环境接口*****
             else:
                 print("Can not support the " +
                       all_args.env_name + "environment.")
                 raise NotImplementedError
-            env.seed(all_args.seed + rank * 1000)
+            env.seed(all_args.seed + rank * 1000)  # 设置随机种子，确保不同的环境有不同的种子
             return env
         return init_env
     if all_args.n_rollout_threads == 1:
+        # 使用 DummyVecEnv 封装单线程环境
         return DummyVecEnv([get_env_fn(0)])
     else:
+        # 使用 SubprocVecEnv 封装多线程环境
         return SubprocVecEnv([get_env_fn(i) for i in range(all_args.n_rollout_threads)])
 
 
 def make_eval_env(all_args):
+    """
+    创建测试环境
+    """
     def get_env_fn(rank):
         def init_env():
             if all_args.env_name == "MPE":
