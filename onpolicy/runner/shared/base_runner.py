@@ -25,27 +25,27 @@ class Runner(object):
             self.render_envs = config['render_envs']       
 
         # parameters
-        self.env_name = self.all_args.env_name  # MPE
-        self.algorithm_name = self.all_args.algorithm_name  # rmappo
-        self.experiment_name = self.all_args.experiment_name    # check
-        self.use_centralized_V = self.all_args.use_centralized_V    # True
-        self.use_obs_instead_of_state = self.all_args.use_obs_instead_of_state  # False
-        self.num_env_steps = self.all_args.num_env_steps    # 20 000 000
-        self.episode_length = self.all_args.episode_length  # 25
-        self.n_rollout_threads = self.all_args.n_rollout_threads    # 128
-        self.n_eval_rollout_threads = self.all_args.n_eval_rollout_threads # 1
-        self.n_render_rollout_threads = self.all_args.n_render_rollout_threads # 1
-        self.use_linear_lr_decay = self.all_args.use_linear_lr_decay # False
-        self.hidden_size = self.all_args.hidden_size    # 64
-        self.use_wandb = self.all_args.use_wandb    # True
-        self.use_render = self.all_args.use_render      # False
-        self.recurrent_N = self.all_args.recurrent_N    # 1
+        self.env_name = self.all_args.env_name
+        self.algorithm_name = self.all_args.algorithm_name
+        self.experiment_name = self.all_args.experiment_name
+        self.use_centralized_V = self.all_args.use_centralized_V
+        self.use_obs_instead_of_state = self.all_args.use_obs_instead_of_state
+        self.num_env_steps = self.all_args.num_env_steps
+        self.episode_length = self.all_args.episode_length
+        self.n_rollout_threads = self.all_args.n_rollout_threads
+        self.n_eval_rollout_threads = self.all_args.n_eval_rollout_threads
+        self.n_render_rollout_threads = self.all_args.n_render_rollout_threads
+        self.use_linear_lr_decay = self.all_args.use_linear_lr_decay
+        self.hidden_size = self.all_args.hidden_size
+        self.use_wandb = self.all_args.use_wandb
+        self.use_render = self.all_args.use_render
+        self.recurrent_N = self.all_args.recurrent_N
 
         # interval
-        self.save_interval = self.all_args.save_interval    # 1
-        self.use_eval = self.all_args.use_eval              # False
-        self.eval_interval = self.all_args.eval_interval    # 25
-        self.log_interval = self.all_args.log_interval      # 5
+        self.save_interval = self.all_args.save_interval
+        self.use_eval = self.all_args.use_eval
+        self.eval_interval = self.all_args.eval_interval
+        self.log_interval = self.all_args.log_interval
 
         # dir
         self.model_dir = self.all_args.model_dir
