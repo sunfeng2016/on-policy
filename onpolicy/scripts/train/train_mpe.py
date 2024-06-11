@@ -7,6 +7,11 @@ import setproctitle
 import numpy as np
 from pathlib import Path
 import torch
+
+sys.path.append("/home/ubuntu/sunfeng/MARL/on-policy/")
+
+os.environ["WANDB_API_KEY"] = "5cbfb4a55c02160ace928671880a8127c19936c4"
+
 from onpolicy.config import get_config
 from onpolicy.envs.mpe.MPE_env import MPEEnv
 from onpolicy.envs.env_wrappers import SubprocVecEnv, DummyVecEnv
