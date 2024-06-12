@@ -150,9 +150,11 @@ class BaseEnv(MultiAgentEnv):
         # 每个时间步，红方出界的智能体数量
         self.out_of_bounds_num = 0 
 
-        obs = self.get_obs()
+        local_obs = self.get_obs()
+        global_state = [self.get_state()] * self.n_reds
+        available_actions = None
 
-        return obs
+        return local_obs, global_state, available_actions
 
     def seed(self, seed=None):
         if seed is None:

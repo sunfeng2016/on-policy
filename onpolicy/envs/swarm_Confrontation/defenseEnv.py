@@ -101,8 +101,14 @@ class DefenseEnv(BaseEnv):
         # 定义状态空间
         self.share_observation_space = [self.get_state_size()] * self.n_reds
 
+        # 初始化获胜次数
+        self.battles_game = 0
+        self.battles_won = 0
+        self.timeouts = 0
+
+
     def reset(self):
-        obs = super().reset()
+        local_obs, global_state, available_actions = super().reset()
 
         self.in_threat_zone_times = np.zeros(self.n_blues)
 
@@ -114,7 +120,10 @@ class DefenseEnv(BaseEnv):
 
         self.total_hit_core_num = 0         # 当前回合红方高价值区域被打击的总次数
 
-        return obs
+        self.win_counted = False
+        self.defeat_counted = False
+
+        return local_obs, global_state, available_actions
 
     def red_explode(self, explode_mask):
         # 更新 explode_mask， 排除已经死掉的智能体
@@ -137,7 +146,6 @@ class DefenseEnv(BaseEnv):
         blue_explode_mask = np.any(blue_in_explode_zone[valid_explode_mask], axis=0)
         self.explode_blue_num = np.sum(blue_explode_mask & self.blue_alives)
         self.blue_alives[blue_explode_mask] = False
-
 
     def red_collide(self, collide_mask, pt):
         """
@@ -241,22 +249,44 @@ class DefenseEnv(BaseEnv):
 
         # Update terminated flag and reward
         reward = self.reward_battle()
-        info = {'win': False, "other": ""}
-
         terminated, win, res = self.get_result()
 
         if terminated:
-            self._episode_count += 1
+            self.battles_game += 1
+            self._episode_count += 1    
         
         if win:
             reward += self.reward_win
+            self.battles_won += 1
+            self.win_counted = True
         else:
             reward += self.reward_defeat
+            self.defeat_counted = True
 
-        info['win'] = win
-        info['other'] = res
+        if self._episode_steps >= self.episode_limit:
+            self.timeouts += 1
 
-        return reward, terminated, info
+        info = {
+            "battles_won": self.battles_won,
+            "battles_game": self.battles_game,
+            "battles_draw": self.timeouts,
+            "won": self.win_counted,
+            "other": res
+        }
+
+
+        local_obs = self.get_obs()
+        global_state = [self.get_state()] * self.n_reds
+        rewards = [[reward]] * self.n_reds
+
+        dones = np.zeros((self.n_reds), dtype=bool)
+        dones = np.where(terminated, True, ~self.red_alives)
+
+        infos = [info] * self.n_reds
+        
+        available_actions = None
+
+        return local_obs, global_state, rewards, dones, infos, available_actions
 
     def merge_state(self):
         self.positions = np.vstack([self.red_positions, self.blue_positions])
@@ -602,7 +632,7 @@ class DefenseEnv(BaseEnv):
         info = ""
 
         # 检查终止条件
-        if self._episode_count >= self.episode_limit:
+        if self._episode_steps >= self.episode_limit:
             terminated = True
             win = self.total_hit_core_num < self.max_attack_core_num or n_blue_alive == 0
             if win:
@@ -773,7 +803,7 @@ if __name__ == "__main__":
         print("环境更新: {:.5f}".format(time.time() - last_time))
         last_time = time.time()
         
-        world.render(frame_num=i, save_frames=True)
+        world.render(frame_num=i, save_frames=False)
         print("环境渲染: {:.5f}".format(time.time() - last_time))
         time_list.append(time.time() - start_time)
     
