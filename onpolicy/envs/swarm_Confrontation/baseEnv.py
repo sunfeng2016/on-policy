@@ -4,16 +4,18 @@
 # @Description: Implementation of base Environment
 
 import os
+import sys
 import pygame
 import imageio
 import numpy as np
 
-from scipy.spatial import distance
-from smac.env.multiagentenv import MultiAgentEnv
-
+sys.path.append("/home/ubuntu/sunfeng/MARL/on-policy/")
 os.environ["SDL_VIDEODRIVER"] = "dummy"
 # os.environ["SDL_AUDIODRIVER"] = "pulseaudio"
 # os.environ["DISPLAY"] = ":11"
+
+from scipy.spatial import distance
+from onpolicy.envs.starcraft2.multiagentenv import MultiAgentEnv
 
 class BaseEnv(MultiAgentEnv):
     def __init__(self):
@@ -183,7 +185,7 @@ class BaseEnv(MultiAgentEnv):
         # Check for agents that are out of bounds for 10 time steps
         dead_or_not = self.out_of_bounds_time >= self.max_out_of_bounds_time 
 
-        self.out_of_bounds_num = np.sum(dead_or_not[:self.n_reds] & self.alives)
+        self.out_of_bounds_num = np.sum(dead_or_not[:self.n_reds] & self.red_alives)
         self.alives[dead_or_not] = False
 
 
