@@ -569,7 +569,7 @@ class BaseEnv(MultiAgentEnv):
         pygame.display.flip()
 
         if save_frames:
-            frame_path = f"frames/frame_{frame_num:04d}.png"
+            frame_path = f"./frames/frame_{frame_num:04d}.png"
             pygame.image.save(self.screen, frame_path)
             
 
