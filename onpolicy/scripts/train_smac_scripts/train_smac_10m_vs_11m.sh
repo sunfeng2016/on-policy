@@ -6,7 +6,7 @@ exp="check"
 seed_max=1
 
 # run_cmd="python"
-run_cmd="python -m debugpy --listen 888 --wait-for-client"
+run_cmd="python -m debugpy --listen 8888 --wait-for-client"
 
 echo "env is ${env}, map is ${map}, algo is ${algo}, exp is ${exp}, max seed is ${seed_max}"
 for seed in `seq ${seed_max}`;
