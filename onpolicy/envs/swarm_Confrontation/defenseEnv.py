@@ -5,14 +5,13 @@
 
 import os
 import pygame
-import imageio
 import numpy as np
 
 from baseEnv import BaseEnv
 from scipy.spatial import distance
 from gym.spaces import MultiDiscrete
 
-
+image_dir = "/home/ubuntu/sunfeng/MARL/on-policy/onpolicy/envs/swarm_Confrontation/"
 os.environ["SDL_VIDEODRIVER"] = "dummy"
 # os.environ["SDL_AUDIODRIVER"] = "pulseaudio"
 # os.environ["DISPLAY"] = ":11"
@@ -696,8 +695,8 @@ class DefenseEnv(BaseEnv):
         if self.screen is None:
             pygame.init()
             self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
-            red_plane_img = pygame.image.load('./png/red_plane_s.png').convert_alpha()
-            blue_plane_img = pygame.image.load('./png/blue_plane_s.png').convert_alpha()
+            red_plane_img = pygame.image.load(f'{image_dir}/png/red_plane_s.png').convert_alpha()
+            blue_plane_img = pygame.image.load(f'{image_dir}/png/blue_plane_s.png').convert_alpha()
 
             # 缩放飞机贴图
             scale_factor = 0.2  # 调整缩放比例
@@ -754,7 +753,7 @@ class DefenseEnv(BaseEnv):
         pygame.display.flip()
 
         if save_frames:
-            frame_path = f"frames/frame_{frame_num:04d}.png"
+            frame_path = f"{image_dir}/frames/frame_{frame_num:04d}.png"
             pygame.image.save(self.screen, frame_path)
             
 
