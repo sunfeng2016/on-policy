@@ -627,18 +627,3 @@ if __name__ == "__main__":
     world.close()
 
     # create_gif("frames", "output.gif", fps=100)
-
-
-    
-
-
-        
-
-
-
-
-
-        
-
-
-
