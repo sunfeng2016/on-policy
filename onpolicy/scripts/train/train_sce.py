@@ -13,9 +13,8 @@ sys.path.append("/home/ubuntu/sunfeng/MARL/on-policy/")
 os.environ["WANDB_API_KEY"] = "5cbfb4a55c02160ace928671880a8127c19936c4"
 
 from onpolicy.config import get_config
-from onpolicy.envs.swarm_Confrontation.baseEnv import BaseEnv
 from onpolicy.envs.swarm_Confrontation.defenseEnv import DefenseEnv
-from onpolicy.envs.env_wrappers import SubprocVecEnv, DummyVecEnv
+from onpolicy.envs.env_wrappers import ShareSubprocVecEnv, ShareDummyVecEnv
 
 
 """Train script for SCEs."""
@@ -33,10 +32,12 @@ def make_train_env(all_args):
             env.seed(all_args.seed + rank * 1000)
             return env
         return init_env
+
     if all_args.n_rollout_threads == 1:
-        return DummyVecEnv([get_env_fn(0)])
+        return ShareDummyVecEnv([get_env_fn(0)])
     else:
-        return SubprocVecEnv([get_env_fn(i) for i in range(all_args.n_rollout_threads)])
+        return ShareSubprocVecEnv([get_env_fn(i) for i in range(all_args.n_rollout_threads)])
+
 
 
 def make_eval_env(all_args):
@@ -51,10 +52,10 @@ def make_eval_env(all_args):
             env.seed(all_args.seed * 50000 + rank * 10000)
             return env
         return init_env
-    if all_args.n_eval_rollout_threads == 1:
-        return DummyVecEnv([get_env_fn(0)])
+    if all_args.n_rollout_threads == 1:
+        return ShareDummyVecEnv([get_env_fn(0)])
     else:
-        return SubprocVecEnv([get_env_fn(i) for i in range(all_args.n_eval_rollout_threads)])
+        return ShareSubprocVecEnv([get_env_fn(i) for i in range(all_args.n_rollout_threads)])
 
 
 def parse_args(args, parser):
@@ -146,7 +147,7 @@ def main(args):
     # env init
     envs = make_train_env(all_args)
     eval_envs = make_eval_env(all_args) if all_args.use_eval else None
-    num_agents = all_args.num_agents
+    num_agents = 100
 
     config = {
         "all_args": all_args,

@@ -7,9 +7,8 @@ import os
 import pygame
 import numpy as np
 
-from baseEnv import BaseEnv
+from onpolicy.envs.swarm_Confrontation.baseEnv import BaseEnv
 from scipy.spatial import distance
-
 from onpolicy.utils.multi_discrete import MultiDiscrete
 
 image_dir = "/home/ubuntu/sunfeng/MARL/on-policy/onpolicy/envs/swarm_Confrontation/"
@@ -91,9 +90,9 @@ class DefenseEnv(BaseEnv):
         self.reward_out_of_bound = -5       # 出界惩罚
 
         # 定义动作空间 （多离线动作空间）
-        self.action_space = [MultiDiscrete([[0, self.acc_action_num],
-                                            [0, self.heading_action_num],
-                                            [0, self.attack_action_num]])] * self.n_reds
+        self.action_space = [MultiDiscrete([[0, self.acc_action_num-1],
+                                            [0, self.heading_action_num-1],
+                                            [0, self.attack_action_num-1]])] * self.n_reds
         
         # 定义观测空间
         self.observation_space = [self.get_obs_size()] * self.n_reds

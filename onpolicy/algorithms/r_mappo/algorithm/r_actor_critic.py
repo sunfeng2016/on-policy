@@ -137,7 +137,8 @@ class R_Critic(nn.Module):
         init_method = [nn.init.xavier_uniform_, nn.init.orthogonal_][self._use_orthogonal]
 
         cent_obs_shape = get_shape_from_obs_space(cent_obs_space)
-        base = CNNBase if len(cent_obs_shape) == 3 else MLPBase
+        # base = CNNBase if len(cent_obs_shape) == 3 else MLPBase
+        base = MLPBase
         self.base = base(args, cent_obs_shape)
 
         if self._use_naive_recurrent_policy or self._use_recurrent_policy:
