@@ -15,6 +15,7 @@ os.environ["SDL_VIDEODRIVER"] = "dummy"
 # os.environ["DISPLAY"] = ":11"
 
 from scipy.spatial import distance
+from onpolicy.utils.multi_discrete import MultiDiscrete
 from onpolicy.envs.starcraft2.multiagentenv import MultiAgentEnv
 
 class BaseEnv(MultiAgentEnv):
@@ -100,6 +101,22 @@ class BaseEnv(MultiAgentEnv):
         self.heading_actions = np.linspace(-self.heading_action_max, self.heading_action_max, self.heading_action_num)
         self.attack_actions = np.arange(0, self.attack_action_num) # ["no-op", "explode", "collide", "soft_kill"]
 
+        # 定义动作空间 （多离线动作空间）
+        self.action_space = [MultiDiscrete([[0, self.acc_action_num-1],
+                                            [0, self.heading_action_num-1],
+                                            [0, self.attack_action_num-1]])] * self.n_reds
+        
+        # 定义观测空间
+        self.observation_space = [self.get_obs_size()] * self.n_reds
+
+        # 定义状态空间
+        self.share_observation_space = [self.get_state_size()] * self.n_reds
+
+        # 初始化获胜次数
+        self.battles_game = 0
+        self.battles_won = 0
+        self.timeouts = 0
+
         # Screen
         self.screen = None
         self.scale_factor = 0.5
@@ -150,11 +167,8 @@ class BaseEnv(MultiAgentEnv):
         # 每个时间步，红方出界的智能体数量
         self.out_of_bounds_num = 0 
 
-        local_obs = self.get_obs()
-        global_state = [self.get_state()] * self.n_reds
-        available_actions = None
-
-        return local_obs, global_state, available_actions
+        self.win_counted = False
+        self.defeat_counted = False
 
     def seed(self, seed=None):
         if seed is None:

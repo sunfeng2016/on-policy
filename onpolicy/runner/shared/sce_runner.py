@@ -32,6 +32,7 @@ class SCERunner(Runner):
                     
                 # Obser reward and next obs
                 obs, share_obs, rewards, dones, infos, available_actions = self.envs.step(actions)
+                available_actions = None
 
                 data = obs, share_obs, rewards, dones, infos, available_actions, \
                        values, actions, action_log_probs, \
@@ -105,7 +106,7 @@ class SCERunner(Runner):
 
         self.buffer.share_obs[0] = share_obs.copy()
         self.buffer.obs[0] = obs.copy()
-        self.buffer.available_actions[0] = available_actions.copy()
+        # self.buffer.available_actions[0] = available_actions.copy()
 
     @torch.no_grad()
     def collect(self, step):
@@ -116,7 +117,7 @@ class SCERunner(Runner):
                                             np.concatenate(self.buffer.rnn_states[step]),
                                             np.concatenate(self.buffer.rnn_states_critic[step]),
                                             np.concatenate(self.buffer.masks[step]),
-                                            np.concatenate(self.buffer.available_actions[step]))
+                                            None)
         # [self.envs, agents, dim]
         values = np.array(np.split(_t2n(value), self.n_rollout_threads))
         actions = np.array(np.split(_t2n(action), self.n_rollout_threads))
@@ -179,14 +180,14 @@ class SCERunner(Runner):
                                             np.concatenate(eval_obs),
                                             np.concatenate(eval_rnn_states),
                                             np.concatenate(eval_masks),
-                                            np.concatenate(eval_available_actions),
+                                            None,
                                             deterministic=True)
             else:
                 eval_actions, eval_rnn_states = \
                     self.trainer.policy.act(np.concatenate(eval_obs),
                                             np.concatenate(eval_rnn_states),
                                             np.concatenate(eval_masks),
-                                            np.concatenate(eval_available_actions),
+                                            None,
                                             deterministic=True)
             eval_actions = np.array(np.split(_t2n(eval_actions), self.n_eval_rollout_threads))
             eval_rnn_states = np.array(np.split(_t2n(eval_rnn_states), self.n_eval_rollout_threads))

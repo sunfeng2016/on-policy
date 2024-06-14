@@ -9,7 +9,6 @@ import numpy as np
 
 from onpolicy.envs.swarm_Confrontation.baseEnv import BaseEnv
 from scipy.spatial import distance
-from onpolicy.utils.multi_discrete import MultiDiscrete
 
 image_dir = "/home/ubuntu/sunfeng/MARL/on-policy/onpolicy/envs/swarm_Confrontation/"
 os.environ["SDL_VIDEODRIVER"] = "dummy"
@@ -89,25 +88,9 @@ class DefenseEnv(BaseEnv):
         self.reward_defeat = 0              # 失败奖励
         self.reward_out_of_bound = -5       # 出界惩罚
 
-        # 定义动作空间 （多离线动作空间）
-        self.action_space = [MultiDiscrete([[0, self.acc_action_num-1],
-                                            [0, self.heading_action_num-1],
-                                            [0, self.attack_action_num-1]])] * self.n_reds
-        
-        # 定义观测空间
-        self.observation_space = [self.get_obs_size()] * self.n_reds
-
-        # 定义状态空间
-        self.share_observation_space = [self.get_state_size()] * self.n_reds
-
-        # 初始化获胜次数
-        self.battles_game = 0
-        self.battles_won = 0
-        self.timeouts = 0
-
 
     def reset(self):
-        local_obs, global_state, available_actions = super().reset()
+        super().reset()
 
         self.in_threat_zone_times = np.zeros(self.n_blues)
 
@@ -119,8 +102,9 @@ class DefenseEnv(BaseEnv):
 
         self.total_hit_core_num = 0         # 当前回合红方高价值区域被打击的总次数
 
-        self.win_counted = False
-        self.defeat_counted = False
+        local_obs = self.get_obs()
+        global_state = [self.get_state()] * self.n_reds
+        available_actions = None
 
         return local_obs, global_state, available_actions
 
@@ -249,6 +233,7 @@ class DefenseEnv(BaseEnv):
         # Update terminated flag and reward
         reward = self.reward_battle()
         terminated, win, res = self.get_result()
+        bad_transition = False
 
         if terminated:
             self.battles_game += 1
@@ -264,11 +249,14 @@ class DefenseEnv(BaseEnv):
 
         if self._episode_steps >= self.episode_limit:
             self.timeouts += 1
+            if not win:
+                bad_transition = True
 
         info = {
             "battles_won": self.battles_won,
             "battles_game": self.battles_game,
             "battles_draw": self.timeouts,
+            'bad_transition': bad_transition,
             "won": self.win_counted,
             "other": res
         }
@@ -658,7 +646,6 @@ class DefenseEnv(BaseEnv):
         return terminated, win, info
 
 
-
     def init_positions(self):
         
         red_positions, red_directions = self.generate_red_positions()
@@ -755,9 +742,6 @@ class DefenseEnv(BaseEnv):
         if save_frames:
             frame_path = f"{image_dir}/frames/frame_{frame_num:04d}.png"
             pygame.image.save(self.screen, frame_path)
-            
-
-
 
 def calculate_sector_theta(pos1, pos2, center):
     theta1 = np.arctan2(pos1[1] - center[1], pos1[0] - center[0])

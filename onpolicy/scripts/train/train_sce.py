@@ -39,7 +39,6 @@ def make_train_env(all_args):
         return ShareSubprocVecEnv([get_env_fn(i) for i in range(all_args.n_rollout_threads)])
 
 
-
 def make_eval_env(all_args):
     def get_env_fn(rank):
         def init_env():
@@ -52,13 +51,16 @@ def make_eval_env(all_args):
             env.seed(all_args.seed * 50000 + rank * 10000)
             return env
         return init_env
-    if all_args.n_rollout_threads == 1:
+    
+    if all_args.n_eval_rollout_threads == 1:
         return ShareDummyVecEnv([get_env_fn(0)])
     else:
-        return ShareSubprocVecEnv([get_env_fn(i) for i in range(all_args.n_rollout_threads)])
+        return ShareSubprocVecEnv([get_env_fn(i) for i in range(all_args.n_eval_rollout_threads)])
 
 
 def parse_args(args, parser):
+    parser.add_argument('--map_name', type=str, default='3m',
+                        help="Which smac map to run on")
     parser.add_argument('--scenario_name', type=str,
                         default='simple_spread', help="Which scenario to run on")
     parser.add_argument("--num_landmarks", type=int, default=3)
