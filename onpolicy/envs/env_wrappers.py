@@ -748,7 +748,6 @@ class ShareDummyVecEnv(ShareVecEnv):
         else:
             raise NotImplementedError
 
-
 class ChooseDummyVecEnv(ShareVecEnv):
     def __init__(self, env_fns):
         self.envs = [fn() for fn in env_fns]

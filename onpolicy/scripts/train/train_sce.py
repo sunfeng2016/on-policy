@@ -59,13 +59,14 @@ def make_eval_env(all_args):
 
 
 def parse_args(args, parser):
-    parser.add_argument('--map_name', type=str, default='3m',
+    parser.add_argument('--map_name', type=str, default='100_vs_100',
                         help="Which smac map to run on")
     parser.add_argument('--scenario_name', type=str,
-                        default='simple_spread', help="Which scenario to run on")
+                        default='defense', help="Which scenario to run on")
     parser.add_argument("--num_landmarks", type=int, default=3)
     parser.add_argument('--num_agents', type=int,
                         default=2, help="number of players")
+    parser.add_argument('--only_eval', type=bool, default=False)
 
     all_args = parser.parse_known_args(args)[0]
 
@@ -108,7 +109,7 @@ def main(args):
 
     # run dir
     run_dir = Path(os.path.split(os.path.dirname(os.path.abspath(__file__)))[
-                   0] + "/results") / all_args.env_name / all_args.scenario_name / all_args.algorithm_name / all_args.experiment_name
+                   0] + "/results") / all_args.env_name / all_args.scenario_name / all_args.map_name / all_args.algorithm_name / all_args.experiment_name
     if not run_dir.exists():
         os.makedirs(str(run_dir))
 
@@ -167,7 +168,11 @@ def main(args):
     #     from onpolicy.runner.separated.sce_runner import MPERunner as Runner
 
     runner = Runner(config)
-    runner.run()
+    if all_args.only_eval:
+        assert all_args.n_eval_rollout_threads == 1
+        runner.run_eval()
+    else:
+        runner.run()
     
     # post process
     envs.close()
