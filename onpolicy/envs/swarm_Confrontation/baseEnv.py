@@ -15,20 +15,22 @@ os.environ["SDL_VIDEODRIVER"] = "dummy"
 # os.environ["DISPLAY"] = ":11"
 
 from scipy.spatial import distance
+from .sce_maps import get_map_params
 from onpolicy.utils.multi_discrete import MultiDiscrete
 from onpolicy.envs.starcraft2.multiagentenv import MultiAgentEnv
 
 class BaseEnv(MultiAgentEnv):
-    def __init__(self):
-        
+    def __init__(self, args):
+
         # Set the parameters of the map
-        self.map_name = "map_1"
-        self.n_reds = 100
-        self.n_blues = 100
-        self.episode_limit = 400
-        self.size_x = 8000
-        self.size_y = 5000
-        self.defender = 'red'
+        self.map_name = args.map_name
+        map_params = get_map_params(self.map_name)
+        self.n_reds = map_params["n_reds"]
+        self.n_blues = map_params["n_blues"]
+        self.episode_limit = args.episode_length
+        self.size_x = map_params["size_x"]
+        self.size_y = map_params["size_y"]
+        self.defender = map_params["defender"]
 
         # Calculate the number of agents
         self.n_agents = self.n_reds + self.n_blues
@@ -165,7 +167,8 @@ class BaseEnv(MultiAgentEnv):
         self.angles_diff_red2blue = None
 
         # 每个时间步，红方出界的智能体数量
-        self.out_of_bounds_num = 0 
+        self.red_out_of_bounds_num = 0
+        self.blue_out_of_bounds_num = 0
 
         self.win_counted = False
         self.defeat_counted = False
@@ -201,7 +204,8 @@ class BaseEnv(MultiAgentEnv):
         # Check for agents that are out of bounds for 10 time steps
         dead_or_not = self.out_of_bounds_time >= self.max_out_of_bounds_time 
 
-        self.out_of_bounds_num = np.sum(dead_or_not[:self.n_reds] & self.red_alives)
+        self.red_out_of_bounds_num = np.sum(dead_or_not[:self.n_reds] & self.red_alives)
+        self.blue_out_of_bounds_num = np.sum(dead_or_not[self.n_reds:] & self.blue_alives)
         self.alives[dead_or_not] = False
 
 
@@ -515,22 +519,20 @@ class BaseEnv(MultiAgentEnv):
         return actions
     
     def transform_position(self, position):
-        half_size_x = self.size_x / 2
-        half_size_y = self.size_y / 2
+        new_center_x = -self.size_x / 2
+        new_center_y = self.size_y / 2
 
-        transformed_x = ((position[0] + half_size_x) / self.size_x * self.screen_width).astype(int)
-        transformed_y = ((position[1] + half_size_y) / self.size_y * self.screen_height).astype(int)
+        transformed_x = ((position[0] - new_center_x) * self.scale_factor).astype(int)
+        transformed_y = -((position[1] - new_center_y) * self.scale_factor).astype(int)
         return np.array([transformed_x, transformed_y])
     
     def transform_positions(self):
         # 将世界坐标转换为屏幕坐标
-        half_size_x = self.size_x / 2
-        half_size_y = self.size_y / 2
+        new_center_x = -self.size_x / 2
+        new_center_y = self.size_y / 2
 
-        self.transformed_positions[:, 0] = ((self.positions[:, 0] + half_size_x)
-                                              / self.size_x * self.screen_width).astype(int)
-        self.transformed_positions[:, 1] = ((self.positions[:, 1] + half_size_y)
-                                              / self.size_y * self.screen_height).astype(int)
+        self.transformed_positions[:, 0] = ((self.positions[:, 0] - new_center_x) * self.scale_factor).astype(int)
+        self.transformed_positions[:, 1] = -((self.positions[:, 1] - new_center_y) * self.scale_factor).astype(int)
         
     def close(self):
         if self.screen is not None:

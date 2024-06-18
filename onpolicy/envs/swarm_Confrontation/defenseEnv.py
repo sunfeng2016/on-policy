@@ -10,6 +10,7 @@ import numpy as np
 from onpolicy.envs.swarm_Confrontation.baseEnv import BaseEnv
 from scipy.spatial import distance
 
+
 image_dir = "/home/ubuntu/sunfeng/MARL/on-policy/onpolicy/envs/swarm_Confrontation/"
 os.environ["SDL_VIDEODRIVER"] = "dummy"
 # os.environ["SDL_AUDIODRIVER"] = "pulseaudio"
@@ -17,8 +18,8 @@ os.environ["SDL_VIDEODRIVER"] = "dummy"
 
 class DefenseEnv(BaseEnv):
     def __init__(self, args):
-        super(DefenseEnv, self).__init__()
-        
+        super(DefenseEnv, self).__init__(args)
+
         # red base
         self.red_core = {
             'center': np.array([2250.0, 0.0]),
@@ -45,11 +46,14 @@ class DefenseEnv(BaseEnv):
 
         self.red_base_center = self.red_base['center']
         self.red_base_radius = self.red_base['radius']
+        
+        # 中间正方形区域
         self.red_square_size = 1000.0 / 2
         
         # 左侧威胁区
         self.left_sector_pos1 = np.array([1366.0, 884.0])
         self.left_sector_pos2 = np.array([1366.0, -884.0])
+        
         self.left_sector_theta1, self.left_sector_theta2 = calculate_sector_theta(
             self.left_sector_pos1, self.left_sector_pos2, self.red_base_center)
         self.left_threat_x = self.red_base_center[0] - self.red_square_size
@@ -57,16 +61,17 @@ class DefenseEnv(BaseEnv):
         # 右侧威胁区
         self.right_sector_pos1 = np.array([3134.0, -884.0])
         self.right_sector_pos2 = np.array([3134.0, 884.0])
+        
         self.right_sector_theta1, self.right_sector_theta2 = calculate_sector_theta(
             self.right_sector_pos1, self.right_sector_pos2, self.red_base_center)
         self.right_threat_x = self.red_base_center[0] + self.red_square_size
 
         # blue base
         self.blue_bases = [
-            {'center': np.array([1500.0, 1500.0]), 'radius': 500.0},    # 上右
-            {'center': np.array([1500.0, -1500.0]), 'radius': 500.0},   # 下右
-            {'center': np.array([500.0, 1500.0]), 'radius': 500.0},     # 上左
-            {'center': np.array([500.0, -1500.0]), 'radius': 500.0},    # 下左
+            {'center': np.array([1500.0,  1500.0]), 'radius': 500.0},     # 上右
+            {'center': np.array([1500.0, -1500.0]), 'radius': 500.0},     # 下右
+            {'center': np.array([ 500.0,  1500.0]), 'radius': 500.0},     # 上左
+            {'center': np.array([ 500.0, -1500.0]), 'radius': 500.0},     # 下左
         ]
 
         # max in threat zone time
@@ -81,13 +86,38 @@ class DefenseEnv(BaseEnv):
         self.reward_time = -0.1             # 每存活一个时间步的惩罚
         self.reward_explode_red = -10       # 被炸掉的惩罚
         self.reward_explode_blue = 10       # 炸掉蓝方的奖励
-        self.reward_explode_invalid = -15   # 无效自爆惩罚
+        self.reward_explode_invalid = -10   # 无效自爆惩罚
         self.reward_attack_core = -20       # 核心区域被攻击的惩罚
         self.reward_collied = 10            # 撞击成功的奖励
-        self.reward_win = 100               # 获胜奖励
+        self.reward_win = 3000              # 获胜奖励
         self.reward_defeat = 0              # 失败奖励
-        self.reward_out_of_bound = -5       # 出界惩罚
+        self.reward_out_of_bound = -10      # 出界惩罚
 
+        # 计算 R_min 和 R_max
+        # 时间惩罚
+        R_min_time_penalty = self.reward_time
+
+        # 每步最多可能的红方智能体被炸掉、出界或无效自爆的最坏情况
+        R_min_individual_penalty = min(
+            self.reward_explode_red * self.n_reds * 2,
+            self.reward_out_of_bound * self.n_reds * 2,
+            self.reward_explode_invalid * self.n_reds * 2
+        )
+        
+        # 核心区域被打击的最坏情况
+        R_min_core_hit_penalty = self.reward_attack_core * self.max_attack_core_num * 2
+
+        # 计算总的最小奖励
+        self.R_min = R_min_time_penalty + R_min_individual_penalty + R_min_core_hit_penalty + self.reward_defeat
+
+        # 碰撞奖励
+        R_max_collision_reward = self.reward_collied * self.n_reds
+
+        # 自爆奖励
+        R_max_explode_reward = self.reward_explode_blue * self.n_blues
+
+        self.R_max = self.reward_win + R_max_collision_reward + R_max_explode_reward
+        
 
     def reset(self):
         super().reset()
@@ -100,7 +130,13 @@ class DefenseEnv(BaseEnv):
         self.collide_success_num = 0        # 每个时间撞击成功的红方智能体数量
         self.attack_core_num = 0            # 每个时间步红方核心区域被攻击的次数
 
+        self.total_explode_red_num = 0      # 当前回合红方被炸毁的智能体总数
+        self.total_explode_blue_num = 0     # 当前回合蓝方被炸毁的智能体总数
+        self.total_invalid_explode_num = 0  # 当前回合红方无效自爆的智能体总数
         self.total_hit_core_num = 0         # 当前回合红方高价值区域被打击的总次数
+        self.total_collide_num = 0          # 当前回合碰撞的智能体数量
+        self.total_red_outOfbounds_num = 0  # 红方出界的智能体总数
+        self.total_blue_outOfbounds_num = 0 # 蓝方出界的智能体总数
 
         local_obs = self.get_obs()
         global_state = [self.get_state()] * self.n_reds
@@ -231,7 +267,6 @@ class DefenseEnv(BaseEnv):
         self._episode_steps += 1
 
         # Update terminated flag and reward
-        reward = self.reward_battle()
         terminated, win, res = self.get_result()
         bad_transition = False
 
@@ -240,11 +275,9 @@ class DefenseEnv(BaseEnv):
             self._episode_count += 1    
         
         if win:
-            reward += self.reward_win
             self.battles_won += 1
             self.win_counted = True
         else:
-            reward += self.reward_defeat
             self.defeat_counted = True
 
         if self._episode_steps >= self.episode_limit:
@@ -261,9 +294,10 @@ class DefenseEnv(BaseEnv):
             "other": res
         }
 
-
         local_obs = self.get_obs()
         global_state = [self.get_state()] * self.n_reds
+        reward = self.get_reward(win)
+
         rewards = [[reward]] * self.n_reds
 
         dones = np.zeros((self.n_reds), dtype=bool)
@@ -598,15 +632,59 @@ class DefenseEnv(BaseEnv):
             
         return agent_positions, agent_directions
 
-    def reward_battle(self):
+    def reward_battle_old(self):
         reward = self.reward_time
 
-        num = np.array([self.explode_red_num, self.explode_blue_num, self.invalid_explode_num, self.collide_success_num, self.attack_core_num, self.out_of_bounds_num])
+        num = np.array([self.explode_red_num, self.explode_blue_num, self.invalid_explode_num, self.collide_success_num, self.attack_core_num, self.red_out_of_bounds_num])
         value = np.array([self.reward_explode_red, self.reward_explode_blue, self.reward_explode_invalid, self.reward_collied, self.reward_attack_core, self.reward_out_of_bound])
 
         reward += np.sum(num * value)
 
         return reward
+    
+    def get_reward(self, win=False):
+        self.total_explode_red_num += self.explode_red_num
+        self.total_explode_blue_num += self.explode_blue_num
+        self.total_invalid_explode_num += self.invalid_explode_num
+        self.total_red_outOfbounds_num += self.red_out_of_bounds_num
+        self.total_blue_outOfbounds_num += self.blue_out_of_bounds_num
+
+        # 动态时间惩罚
+        time_penalty = self.reward_time * self._episode_steps / self.episode_limit
+
+        # 红方智能体被炸掉惩罚
+        red_destroyed_penalty = self.reward_explode_red * self.explode_red_num * (
+            1 + self.total_explode_red_num / self.n_reds)
+        
+        # 核心区域被打击惩罚
+        core_hit_penalty = self.reward_attack_core * self.attack_core_num * (
+            1 + self.total_hit_core_num / self.max_attack_core_num)
+        
+        # 出界惩罚
+        out_of_bounds_penalty = self.reward_out_of_bound * self.red_out_of_bounds_num * (
+            1 + self.total_red_outOfbounds_num / self.n_reds)
+
+        # 无效自爆惩罚
+        invalid_self_destruct_penalty = self.reward_explode_invalid * self.invalid_explode_num * (
+            1 + self.total_invalid_explode_num / self.n_reds)
+        
+        # 撞击毁伤蓝方智能体的奖励
+        collide_reward = self.reward_collied * self.collide_success_num
+
+        # 自爆毁伤蓝方智能体的奖励
+        self_destruct_reward = self.reward_explode_blue * self.explode_blue_num
+
+        # 获胜奖励
+        win_reward = self.reward_win if win else self.reward_defeat
+
+        total_reward = (win_reward + time_penalty + red_destroyed_penalty + core_hit_penalty + 
+                        out_of_bounds_penalty + invalid_self_destruct_penalty + collide_reward +
+                        self_destruct_reward)
+
+        R_scaled = (total_reward - self.R_min) / (self.R_max - self.R_min) * 2 - 1
+        R_scaled = np.clip(R_scaled, -1.0, 1.0)
+
+        return R_scaled
     
     def get_result(self):
         # 计算存活的智能体数量
@@ -638,10 +716,10 @@ class DefenseEnv(BaseEnv):
             terminated = True
             win = False
             info = "Red base detroyed. Blue wins."
-        elif n_blue_alive + self.total_hit_core_num < self.max_attack_core_num:
-            terminated = True
-            win = True
-            info = "Remaining blue units insufficient to destroy red base. Red wins."
+        # elif n_blue_alive + self.total_hit_core_num < self.max_attack_core_num:
+        #     terminated = True
+        #     win = True
+        #     info = "Remaining blue units insufficient to destroy red base. Red wins."
 
         return terminated, win, info
 
@@ -659,12 +737,12 @@ class DefenseEnv(BaseEnv):
     
     def transform_lines(self):
         # 将世界坐标转换为屏幕坐标
-        half_size_x = self.size_x / 2
-        half_size_y = self.size_y / 2
+        new_center_x = -self.size_x / 2
+        new_center_y = self.size_y / 2
 
         self.transformed_lines = np.zeros_like(self.red_lines)
-        self.transformed_lines[:, :, 0] = ((self.red_lines[:, :, 0] + half_size_x) / self.size_x * self.screen_width).astype(int)
-        self.transformed_lines[:, :, 1] = ((self.red_lines[:, :, 1] + half_size_y) / self.size_y * self.screen_height).astype(int)
+        self.transformed_lines[:, :, 0] = ((self.red_lines[:, :, 0] - new_center_x) * self.scale_factor).astype(int)
+        self.transformed_lines[:, :, 1] = -((self.red_lines[:, :, 1] - new_center_y) * self.scale_factor).astype(int)
 
     def transform_circles(self):
         self.transformed_circles_center = []
@@ -674,10 +752,10 @@ class DefenseEnv(BaseEnv):
 
         for circle in circles:
             self.transformed_circles_center.append(self.transform_position(circle['center']))
-            self.transformed_circles_radius.append(circle['radius'] / self.size_x * self.screen_width)
+            self.transformed_circles_radius.append(circle['radius'] * self.scale_factor)
             
         
-    def render(self, frame_num=0, save_frames=False):
+    def render(self, mode='human'):
 
         if self.screen is None:
             pygame.init()
@@ -720,10 +798,8 @@ class DefenseEnv(BaseEnv):
         for i in range(self.n_agents):
             if self.alives[i]:
                 image = self.red_plane_img if i < self.n_reds else self.blue_plane_img
-                # cache = self.red_img_cache if i < self.n_reds else self.blue_img_cache
-
-                rotated_img = pygame.transform.rotate(image, -angles[i])
-                # rotated_img = self.get_rotated_image(image, angles[i], cache, i)
+                # rotated_img = pygame.transform.rotate(image, -angles[i])
+                rotated_img = pygame.transform.rotate(image, angles[i])
                 new_rect = rotated_img.get_rect(center=self.transformed_positions[i])
                 self.screen.blit(rotated_img, new_rect)
 
@@ -732,16 +808,32 @@ class DefenseEnv(BaseEnv):
         blue_alive = sum(self.alives[self.n_reds:])
 
         # 渲染存活数量文本
-        red_text = self.font.render(f'Red Alive: {red_alive}', True, (255, 0, 0))
-        blue_text = self.font.render(f'Blue Alive: {blue_alive}', True, (0, 0, 255))
-        self.screen.blit(red_text, (10, 10))
-        self.screen.blit(blue_text, (10, 50))
+        time_text = self.font.render(f'Episode: {self._episode_count} Time Step: {self._episode_steps}', True, (0, 0, 0))
+        alive_text = self.font.render(f'Red Alive: {red_alive} Blue Alive: {blue_alive}', True, (0, 0, 0))
+        explode_text = self.font.render(f'Red Exploded: {self.total_explode_red_num}/{self.explode_red_num} \
+                                        Blue exploded: {self.total_explode_blue_num}/{self.explode_blue_num}', True, (0, 0, 0))
+        explode_text_2 = self.font.render(f'Red Invalid Explode: {self.total_invalid_explode_num}/{self.invalid_explode_num}', True, (0, 0, 0))
+        outofbounds_text = self.font.render(f'Red Outofbound: {self.total_red_outOfbounds_num}/{self.red_out_of_bounds_num} \
+                                            Blue Outofbound: {self.total_blue_outOfbounds_num}/{self.blue_out_of_bounds_num}')
+        Hit_text = self.font.render(f"Hit Core: {self.total_hit_core_num}/{self.attack_core_num}", True, (0, 0, 0))
+        Game_text = self.font.render(f"Battles_game: {self.battles_game} Battles_won: {self.battles_won}", True, (0, 0, 0))
+
+        self.screen.blit(time_text, (10, 10))
+        self.screen.blit(alive_text, (10, 50))
+        self.screen.blit(explode_text, (10, 90))
+        self.screen.blit(explode_text_2, (10, 130))
+        self.screen.blit(outofbounds_text, (10, 170))
+        self.screen.blit(Hit_text, (10, 210))
+        self.screen.blit(Game_text, (10, 250))
 
         pygame.display.flip()
 
-        if save_frames:
-            frame_path = f"{image_dir}/frames/frame_{frame_num:04d}.png"
-            pygame.image.save(self.screen, frame_path)
+        frame_dir = f"{image_dir}/Defense_frames/"
+        if not os.path.exists(frame_dir):
+            os.makedirs(frame_dir)
+        frame_path = os.path.join(frame_dir, f"frame_{self._total_steps:06d}.png")
+
+        pygame.image.save(self.screen, frame_path)
 
 def calculate_sector_theta(pos1, pos2, center):
     theta1 = np.arctan2(pos1[1] - center[1], pos1[0] - center[0])
