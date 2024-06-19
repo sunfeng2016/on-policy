@@ -95,28 +95,33 @@ class DefenseEnv(BaseEnv):
 
         # 计算 R_min 和 R_max
         # 时间惩罚
-        R_min_time_penalty = self.reward_time
+        # R_min_time_penalty = self.reward_time
 
-        # 每步最多可能的红方智能体被炸掉、出界或无效自爆的最坏情况
-        R_min_individual_penalty = min(
-            self.reward_explode_red * self.n_reds * 2,
-            self.reward_out_of_bound * self.n_reds * 2,
-            self.reward_explode_invalid * self.n_reds * 2
-        )
+        # # 每步最多可能的红方智能体被炸掉、出界或无效自爆的最坏情况
+        # R_min_individual_penalty = min(
+        #     self.reward_explode_red * self.n_reds * 2,
+        #     self.reward_out_of_bound * self.n_reds * 2,
+        #     self.reward_explode_invalid * self.n_reds * 2
+        # )
         
-        # 核心区域被打击的最坏情况
-        R_min_core_hit_penalty = self.reward_attack_core * self.max_attack_core_num * 2
+        # # 核心区域被打击的最坏情况
+        # R_min_core_hit_penalty = self.reward_attack_core * self.max_attack_core_num * 2
 
-        # 计算总的最小奖励
-        self.R_min = R_min_time_penalty + R_min_individual_penalty + R_min_core_hit_penalty + self.reward_defeat
+        # # 计算总的最小奖励
+        # self.R_min = R_min_time_penalty + R_min_individual_penalty + R_min_core_hit_penalty + self.reward_defeat
 
-        # 碰撞奖励
-        R_max_collision_reward = self.reward_collied * self.n_reds
+        # # 碰撞奖励
+        # R_max_collision_reward = self.reward_collied * self.n_reds
 
-        # 自爆奖励
-        R_max_explode_reward = self.reward_explode_blue * self.n_blues
+        # # 自爆奖励
+        # R_max_explode_reward = self.reward_explode_blue * self.n_blues
 
-        self.R_max = self.reward_win + R_max_collision_reward + R_max_explode_reward
+        # self.R_max = self.reward_win + max(R_max_collision_reward, R_max_explode_reward)
+
+        # 奖励值的统计信息
+        self.reward_mean = 0
+        self.reward_std = 1
+        self.reward_alpha = 0.1  # 平滑系数
         
 
     def reset(self):
@@ -642,6 +647,17 @@ class DefenseEnv(BaseEnv):
 
         return reward
     
+    def update_reward_stats(self, reward):
+        """更新奖励的均值和标准差"""
+        self.reward_mean = self.reward_alpha * reward + (1 - self.reward_alpha) * self.reward_mean
+        self.reward_std = np.sqrt(self.reward_alpha * (reward - self.reward_mean) ** 2 + (1 - self.reward_alpha) * self.reward_std ** 2)
+        
+    def normalize_reward(self, reward):
+        """归一化奖励值"""
+        if self.reward_std == 0:
+            return reward
+        return (reward - self.reward_mean) / (self.reward_std + 1e-8)
+    
     def get_reward(self, win=False):
         self.total_explode_red_num += self.explode_red_num
         self.total_explode_blue_num += self.explode_blue_num
@@ -680,9 +696,19 @@ class DefenseEnv(BaseEnv):
         total_reward = (win_reward + time_penalty + red_destroyed_penalty + core_hit_penalty + 
                         out_of_bounds_penalty + invalid_self_destruct_penalty + collide_reward +
                         self_destruct_reward)
+        
+        R_scaled = total_reward
 
-        R_scaled = (total_reward - self.R_min) / (self.R_max - self.R_min) * 2 - 1
-        R_scaled = np.clip(R_scaled, -1.0, 1.0)
+        # R_scaled = (total_reward - self.R_min) / (self.R_max - self.R_min) * 2 - 1
+        
+        # 更新奖励统计信息
+        # self.update_reward_stats(total_reward)
+
+        # # 归一化奖励
+        # R_scaled = self.normalize_reward(total_reward)
+
+        # # 将归一化后的奖励裁剪到 [-1, 1] 范围内
+        # R_scaled = np.clip(R_scaled, -1.0, 1.0)
 
         return R_scaled
     
