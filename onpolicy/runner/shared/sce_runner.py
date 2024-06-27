@@ -4,6 +4,7 @@ import numpy as np
 from functools import reduce
 import torch
 from onpolicy.runner.shared.base_runner import Runner
+from collections import Counter
 
 def _t2n(x):
     return x.detach().cpu().numpy()
@@ -174,6 +175,18 @@ class SCERunner(Runner):
         eval_episode_rewards = []
         one_episode_rewards = []
 
+        eval_episode_hit_num = []
+        eval_episode_win_reason = []
+
+        eval_episode_scout_core = []
+        eval_episode_scout_comm = []
+        eval_episode_outofbound = []
+        eval_episode_invalid_explode = []
+        eval_episode_be_exploded = []
+        eval_episode_collide = []
+
+
+
         eval_obs, eval_share_obs, eval_available_actions = self.eval_envs.reset()
 
         eval_rnn_states = np.zeros((self.n_eval_rollout_threads, self.num_agents, self.recurrent_N, self.hidden_size), dtype=np.float32)
@@ -214,17 +227,37 @@ class SCERunner(Runner):
                 if eval_dones_env[eval_i]:
                     eval_episode += 1
                     eval_episode_rewards.append(np.sum(one_episode_rewards, axis=0))
+                    
+                    eval_episode_hit_num.append(eval_infos[eval_i][0]['hit_core_num'])
+                    eval_episode_scout_core.append(eval_infos[eval_i][0]['scout_core_ratio'])
+                    eval_episode_scout_comm.append(eval_infos[eval_i][0]['scout_comm_ratio'])
+                    eval_episode_outofbound.append(eval_infos[eval_i][0]['outofbound_ratio'])
+                    eval_episode_invalid_explode.append(eval_infos[eval_i][0]['invalid_explode_ratio'])
+                    eval_episode_be_exploded.append(eval_infos[eval_i][0]['be_exploded_ratio'])
+                    eval_episode_collide.append(eval_infos[eval_i][0]['collided_ratio'])
+                    eval_episode_win_reason.append(eval_infos[eval_i][0]['other'])
+                    
                     one_episode_rewards = []
                     if eval_infos[eval_i][0]['won']:
                         eval_battles_won += 1
 
             if eval_episode >= self.all_args.eval_episodes:
                 eval_episode_rewards = np.array(eval_episode_rewards)
-                eval_env_infos = {'eval_average_episode_rewards': eval_episode_rewards}
-                # eval_env_infos{'eval_explode_rewards'}         
+
+                eval_env_infos = {}
+                eval_env_infos['eval_average_episode_rewards'] = eval_episode_rewards
+                eval_env_infos['eval_average_episode_hit_core_num'] = eval_episode_hit_num
+                eval_env_infos['eval_average_episode_scout_core_ratio'] = eval_episode_scout_core
+                eval_env_infos['eval_average_episode_scout_comm_ratio'] = eval_episode_scout_comm
+                eval_env_infos['eval_average_episode_outofbound_ratio'] = eval_episode_outofbound
+                eval_env_infos['eval_average_episode_invalid_explode_ratio'] = eval_episode_invalid_explode
+                eval_env_infos['eval_average_episode_be_exploded_ratio'] = eval_episode_be_exploded
+                eval_env_infos['eval_average_episode_collide_ratio'] = eval_episode_collide
+
                 self.log_env(eval_env_infos, total_num_steps)
                 eval_win_rate = eval_battles_won/eval_episode
                 print("eval win rate is {}.".format(eval_win_rate))
+                print("eval win reason is {}.".format(Counter(eval_episode_win_reason)))
                 if self.use_wandb:
                     wandb.log({"eval_win_rate": eval_win_rate}, step=total_num_steps)
                 else:
@@ -238,6 +271,8 @@ class SCERunner(Runner):
 
         eval_episode_rewards = []
         one_episode_rewards = []
+
+        eval_episode_win_reason = []
 
         eval_obs, eval_share_obs, eval_available_actions = self.eval_envs.reset()
 
@@ -267,9 +302,7 @@ class SCERunner(Runner):
             # Obser reward and next obs
             eval_obs, eval_share_obs, eval_rewards, eval_dones, eval_infos, eval_available_actions = self.eval_envs.step(eval_actions)
             self.eval_envs.render(mode='human')
-            self.image_id += 1
             one_episode_rewards.append(eval_rewards)
-
             eval_dones_env = np.all(eval_dones, axis=1)
 
             eval_rnn_states[eval_dones_env == True] = np.zeros(((eval_dones_env == True).sum(), self.num_agents, self.recurrent_N, self.hidden_size), dtype=np.float32)
@@ -281,6 +314,7 @@ class SCERunner(Runner):
                 if eval_dones_env[eval_i]:
                     eval_episode += 1
                     eval_episode_rewards.append(np.sum(one_episode_rewards, axis=0))
+                    eval_episode_win_reason.append(eval_infos[eval_i][0]['other'])
                     one_episode_rewards = []
                     if eval_infos[eval_i][0]['won']:
                         eval_battles_won += 1
@@ -290,7 +324,10 @@ class SCERunner(Runner):
                 eval_env_infos = {'eval_average_episode_rewards': eval_episode_rewards}                
                 self.log_env(eval_env_infos, total_num_steps)
                 eval_win_rate = eval_battles_won/eval_episode
+
                 print("eval win rate is {}.".format(eval_win_rate))
+                print("eval win reason is {}.".format(Counter(eval_episode_win_reason)))
+                
                 if self.use_wandb:
                     wandb.log({"eval_win_rate": eval_win_rate}, step=total_num_steps)
                 else:

@@ -14,8 +14,8 @@ os.environ["WANDB_API_KEY"] = "5cbfb4a55c02160ace928671880a8127c19936c4"
 
 from onpolicy.config import get_config
 from onpolicy.envs.swarm_Confrontation.defenseEnv import DefenseEnv
+from onpolicy.envs.swarm_Confrontation.scoutEnv import ScoutEnv
 from onpolicy.envs.env_wrappers import ShareSubprocVecEnv, ShareDummyVecEnv
-
 
 """Train script for SCEs."""
 
@@ -24,7 +24,14 @@ def make_train_env(all_args):
     def get_env_fn(rank):
         def init_env():
             if all_args.env_name == "SCE":
-                env = DefenseEnv(all_args)
+                if all_args.scenario_name == 'defense':
+                    env = DefenseEnv(all_args)
+                elif all_args.scenario_name == 'scout':
+                    env = ScoutEnv(all_args)
+                else:
+                    print('Can not support the ' +
+                          all_args.scenario_name + "scenario.")
+                    raise NotImplementedError
             else:
                 print("Can not support the " +
                       all_args.env_name + "environment.")
@@ -43,7 +50,14 @@ def make_eval_env(all_args):
     def get_env_fn(rank):
         def init_env():
             if all_args.env_name == "SCE":
-                env = DefenseEnv(all_args)
+                if all_args.scenario_name == 'defense':
+                    env = DefenseEnv(all_args)
+                elif all_args.scenario_name == 'scout':
+                    env = ScoutEnv(all_args)
+                else:
+                    print('Can not support the ' +
+                          all_args.scenario_name + "scenario.")
+                    raise NotImplementedError
             else:
                 print("Can not support the " +
                       all_args.env_name + "environment.")
@@ -63,9 +77,6 @@ def parse_args(args, parser):
                         help="Which smac map to run on")
     parser.add_argument('--scenario_name', type=str,
                         default='defense', help="Which scenario to run on")
-    parser.add_argument("--num_landmarks", type=int, default=3)
-    parser.add_argument('--num_agents', type=int,
-                        default=2, help="number of players")
     parser.add_argument('--only_eval', type=bool, default=False)
 
     all_args = parser.parse_known_args(args)[0]
@@ -116,7 +127,7 @@ def main(args):
     # wandb
     if all_args.use_wandb:
         run = wandb.init(config=all_args,
-                         project=all_args.env_name,
+                         project=all_args.env_name + "-" + all_args.scenario_name,
                          entity=all_args.user_name,
                          notes=socket.gethostname(),
                          name=str(all_args.algorithm_name) + "_" +
@@ -150,7 +161,10 @@ def main(args):
     # env init
     envs = make_train_env(all_args)
     eval_envs = make_eval_env(all_args) if all_args.use_eval else None
-    num_agents = 100
+
+    if all_args.env_name == "SCE":
+        from onpolicy.envs.swarm_Confrontation.sce_maps import get_map_params
+        num_agents = get_map_params(all_args.map_name)["n_reds"]
 
     config = {
         "all_args": all_args,
