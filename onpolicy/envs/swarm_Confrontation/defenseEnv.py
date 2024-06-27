@@ -90,6 +90,7 @@ class DefenseEnv(BaseEnv):
         self.reward_attack_core = -20       # 核心区域被攻击的惩罚
         self.reward_collied = 10            # 撞击成功的奖励
         self.reward_win = 3000              # 获胜奖励
+        # self.reward_win = 1000              # 获胜奖励
         self.reward_defeat = 0              # 失败奖励
         self.reward_out_of_bound = -10      # 出界惩罚
 
@@ -117,6 +118,7 @@ class DefenseEnv(BaseEnv):
         # R_max_explode_reward = self.reward_explode_blue * self.n_blues
 
         # self.R_max = self.reward_win + max(R_max_collision_reward, R_max_explode_reward)
+
 
         # 奖励值的统计信息
         self.reward_mean = 0
@@ -148,97 +150,6 @@ class DefenseEnv(BaseEnv):
         available_actions = None
 
         return local_obs, global_state, available_actions
-
-    def red_explode(self, explode_mask):
-        # 更新 explode_mask， 排除已经死掉的智能体
-        valid_explode_mask = explode_mask & self.red_alives
-
-        # 计算每个红方智能体与每个蓝方智能体之间的距离
-        distances_red2blue = distance.cdist(self.red_positions, self.blue_positions, 'euclidean')
-        
-        # 红方智能体自爆范围内的蓝方智能体
-        blue_in_explode_zone = distances_red2blue < self.explode_radius
-
-        # 统计无效自爆的智能体数量
-        valid_blue_mask = blue_in_explode_zone & self.blue_alives
-        self.invalid_explode_num = np.sum(np.sum(valid_blue_mask[valid_explode_mask], axis=1) == 0)
-
-        # 触发自爆的红方智能体将被标记为死亡
-        self.red_alives[valid_explode_mask] = False
-
-        # 将自爆范围内的蓝方智能体标记为死亡，并统计有效毁伤的蓝方智能体数量
-        blue_explode_mask = np.any(blue_in_explode_zone[valid_explode_mask], axis=0)
-        self.explode_blue_num = np.sum(blue_explode_mask & self.blue_alives)
-        self.blue_alives[blue_explode_mask] = False
-
-    def red_collide(self, collide_mask, pt):
-        """
-        红方智能体与其目标的碰撞
-        """
-        # 计算红方智能体到蓝方智能体的方向向量
-        delta_red2blue = self.blue_positions[np.newaxis, :, :] - self.red_positions[:, np.newaxis, :]   # nred x nblue x 2
-
-        # 计算红方智能体到蓝方智能体的角度
-        angles_red2blue = np.arctan2(delta_red2blue[:, :, 1], delta_red2blue[:, :, 0])                  # nred x nblue
-
-        # 计算红方智能体当前方向与到蓝方智能体的方向的角度差
-        angles_diff_red2blue = angles_red2blue - self.red_directions[:, np.newaxis]                     # nred x nblue
-        angles_diff_red2blue = (angles_diff_red2blue + np.pi) % (2 * np.pi) - np.pi
-
-        # 计算红方智能体到蓝方智能体的距离
-        distances_red2blue = distance.cdist(self.red_positions, self.blue_positions, 'euclidean')
-
-        # 创建有效性掩码，只考虑存活的红方和蓝方智能体之间的距离
-        valid_mask = self.red_alives[:, np.newaxis] & self.blue_alives[np.newaxis, :]
-
-        # 将无效的距离设置为无限大
-        distances_red2blue = np.where(valid_mask, distances_red2blue, np.inf)
-
-        # 红方智能体攻击范围内的蓝方智能体
-        blue_in_attack_zone = (distances_red2blue < self.attack_radius) & (
-            np.abs(angles_diff_red2blue) < self.attack_angle / 2
-        )
-
-        # 将不在攻击范围内的距离设置为无限大
-        distances_red2blue[~blue_in_attack_zone] = np.inf
-
-        # 找到每个红方智能体最近的蓝方智能体
-        nearest_blue_id = np.argmin(distances_red2blue, axis=1)
-
-        # 如果红方智能体没有攻击范围内的蓝方智能体，目标设为-1
-        nearest_blue_id[np.all(np.isinf(distances_red2blue), axis=1)] = -1
-
-        # 更新红方智能体的目标
-        red_targets = nearest_blue_id
-
-        # 更新 collide_mask，排除没有 target 的智能体
-        valid_collide_mask = collide_mask & (red_targets != -1) & self.red_alives
-
-        # 获取有效的 target_id
-        target_ids = red_targets[valid_collide_mask]
-        agent_ids = np.where(valid_collide_mask)[0]
-
-        # 获取红方智能体和其目标之间的距离
-        valid_distances = distances_red2blue[valid_collide_mask, target_ids]
-
-        # 判断撞击成功的情况
-        collide_success_mask = valid_distances < self.collide_distance + self.red_velocities[valid_collide_mask] * self.dt_time 
-
-        # 获取撞击成功的 agent_id 和 target_id
-        success_agent_ids = agent_ids[collide_success_mask]
-        success_target_ids = target_ids[collide_success_mask]
-
-        self.collide_success_num = success_agent_ids.size
-
-        # 更新红方智能体和目标蓝方智能体的存活状态
-        self.red_alives[success_agent_ids] = False
-        self.blue_alives[success_target_ids] = False
-
-        # 更新红方智能体的方向
-        self.red_directions[valid_collide_mask] = angles_red2blue[valid_collide_mask, target_ids]
-        pt[valid_collide_mask] = 0
-
-        return pt
 
     def step(self, actions):
         # Get red actions
@@ -295,6 +206,7 @@ class DefenseEnv(BaseEnv):
             "battles_game": self.battles_game,
             "battles_draw": self.timeouts,
             'bad_transition': bad_transition,
+            'hit_core_times': self.total_hit_core_num,
             "won": self.win_counted,
             "other": res
         }
@@ -313,12 +225,6 @@ class DefenseEnv(BaseEnv):
         available_actions = None
 
         return local_obs, global_state, rewards, dones, infos, available_actions
-
-    def merge_state(self):
-        self.positions = np.vstack([self.red_positions, self.blue_positions])
-        self.directions = np.hstack([self.red_directions, self.blue_directions])
-        self.velocities = np.hstack([self.red_velocities, self.blue_velocities])
-        self.alives = np.hstack([self.red_alives, self.blue_alives])
 
     def flee_explode_zone(self, target_positions):
         """
@@ -637,13 +543,17 @@ class DefenseEnv(BaseEnv):
             
         return agent_positions, agent_directions
 
-    def reward_battle_old(self):
+    def get_reward(self, win):
         reward = self.reward_time
 
         num = np.array([self.explode_red_num, self.explode_blue_num, self.invalid_explode_num, self.collide_success_num, self.attack_core_num, self.red_out_of_bounds_num])
         value = np.array([self.reward_explode_red, self.reward_explode_blue, self.reward_explode_invalid, self.reward_collied, self.reward_attack_core, self.reward_out_of_bound])
 
         reward += np.sum(num * value)
+
+        win_reward = self.reward_win if win else self.reward_defeat
+
+        reward += win_reward
 
         return reward
     
@@ -658,7 +568,7 @@ class DefenseEnv(BaseEnv):
             return reward
         return (reward - self.reward_mean) / (self.reward_std + 1e-8)
     
-    def get_reward(self, win=False):
+    def get_reward_new(self, win=False):
         self.total_explode_red_num += self.explode_red_num
         self.total_explode_blue_num += self.explode_blue_num
         self.total_invalid_explode_num += self.invalid_explode_num
@@ -723,29 +633,44 @@ class DefenseEnv(BaseEnv):
         info = ""
 
         # 检查终止条件
-        if self._episode_steps >= self.episode_limit:
-            terminated = True
-            win = self.total_hit_core_num < self.max_attack_core_num or n_blue_alive == 0
-            if win:
-                info = "Time limit reached. Red wins because blue could not destroy the base or all blue units were destroyed."
-            else:
-                info = "Time limit reached. Blue wins by destroying the red base."
-        elif n_red_alive == 0:
+        # if self._episode_steps >= self.episode_limit:
+        #     terminated = True
+        #     # win = self.total_hit_core_num < self.max_attack_core_num or n_blue_alive == 0
+        #     # 至对抗结束，基地未被摧毁
+        #     win = self.total_hit_core_num < self.max_attack_core_num
+        #     if win:
+        #         info = "Time limit reached. Red based were not destroyed."
+        #     else:
+        #         info = "Time limit reached. Red based were destroyed."
+        # # elif n_red_alive == 0:
+        # #     terminated = True
+        # #     win = False
+        # #     info = "All red units destroyed. Blue wins."
+        # elif n_blue_alive == 0:
+        #     terminated = True
+        #     win = True
+        #     info = "All blue units destroyed. Red wins."
+        # elif self.total_hit_core_num >= self.max_attack_core_num:
+        #     terminated = True
+        #     win = False
+        #     info = "Red base detroyed. Blue wins."
+        # # # elif n_blue_alive + self.total_hit_core_num < self.max_attack_core_num:
+        # #     terminated = True
+        # #     win = True
+        # #     info = "Remaining blue units insufficient to destroy red base. Red wins."
+            
+        if self.total_hit_core_num >= self.max_attack_core_num:
             terminated = True
             win = False
-            info = "All red units destroyed. Blue wins."
+            info = "[Defeat] Base destroyed."
         elif n_blue_alive == 0:
             terminated = True
             win = True
-            info = "All blue units destroyed. Red wins."
-        elif self.total_hit_core_num >= self.max_attack_core_num:
+            info = "[Win] All blue dead."
+        elif self._episode_steps >= self.episode_limit:
             terminated = True
-            win = False
-            info = "Red base detroyed. Blue wins."
-        # elif n_blue_alive + self.total_hit_core_num < self.max_attack_core_num:
-        #     terminated = True
-        #     win = True
-        #     info = "Remaining blue units insufficient to destroy red base. Red wins."
+            win = True
+            info = '[Win] Time out.'
 
         return terminated, win, info
 
@@ -763,12 +688,10 @@ class DefenseEnv(BaseEnv):
     
     def transform_lines(self):
         # 将世界坐标转换为屏幕坐标
-        new_center_x = -self.size_x / 2
-        new_center_y = self.size_y / 2
+        new_center = np.array([-self.size_x / 2, self.size_y/2])
+        new_dir = np.array([1, -1])
 
-        self.transformed_lines = np.zeros_like(self.red_lines)
-        self.transformed_lines[:, :, 0] = ((self.red_lines[:, :, 0] - new_center_x) * self.scale_factor).astype(int)
-        self.transformed_lines[:, :, 1] = -((self.red_lines[:, :, 1] - new_center_y) * self.scale_factor).astype(int)
+        self.transformed_lines = ((self.red_lines - new_center) * new_dir * self.scale_factor).astype(int)
 
     def transform_circles(self):
         self.transformed_circles_center = []
@@ -836,11 +759,9 @@ class DefenseEnv(BaseEnv):
         # 渲染存活数量文本
         time_text = self.font.render(f'Episode: {self._episode_count} Time Step: {self._episode_steps}', True, (0, 0, 0))
         alive_text = self.font.render(f'Red Alive: {red_alive} Blue Alive: {blue_alive}', True, (0, 0, 0))
-        explode_text = self.font.render(f'Red Exploded: {self.total_explode_red_num}/{self.explode_red_num} \
-                                        Blue exploded: {self.total_explode_blue_num}/{self.explode_blue_num}', True, (0, 0, 0))
+        explode_text = self.font.render(f'Red Exploded: {self.total_explode_red_num}/{self.explode_red_num} Blue exploded: {self.total_explode_blue_num}/{self.explode_blue_num}', True, (0, 0, 0))
         explode_text_2 = self.font.render(f'Red Invalid Explode: {self.total_invalid_explode_num}/{self.invalid_explode_num}', True, (0, 0, 0))
-        outofbounds_text = self.font.render(f'Red Outofbound: {self.total_red_outOfbounds_num}/{self.red_out_of_bounds_num} \
-                                            Blue Outofbound: {self.total_blue_outOfbounds_num}/{self.blue_out_of_bounds_num}')
+        outofbounds_text = self.font.render(f'Red Outofbound: {self.total_red_outOfbounds_num}/{self.red_out_of_bounds_num} Blue Outofbound: {self.total_blue_outOfbounds_num}/{self.blue_out_of_bounds_num}', True, (0, 0, 0))
         Hit_text = self.font.render(f"Hit Core: {self.total_hit_core_num}/{self.attack_core_num}", True, (0, 0, 0))
         Game_text = self.font.render(f"Battles_game: {self.battles_game} Battles_won: {self.battles_won}", True, (0, 0, 0))
 
@@ -872,47 +793,22 @@ def calculate_sector_theta(pos1, pos2, center):
     return theta1, theta2
 
 
+class Arg(object):
+    def __init__(self) -> None:
+        self.map_name = '100_vs_100'
+        self.scenario_name = 'defense'
+        self.episode_length = 400
+
+
 if __name__ == "__main__":
 
-    world = DefenseEnv()
+    args = Arg()
 
-    import time
-    obs = world.reset()
-    num_frames = 100
+    env = DefenseEnv(args)
 
-    time_list = []
-    world.render(frame_num=0, save_frames=True)
+    env.reset()
 
-    for i in range(1, num_frames):
-        print('-'* 30)
-        start_time = time.time()
-        last_time = time.time()
-
-        world.get_state()
-        print("获取状态: {:.5f}".format(time.time() - last_time))
-        last_time = time.time()
-
-        world.get_obs()
-        print("获取观测: {:.5f}".format(time.time() - last_time))
-        last_time = time.time()
-
-        actions = world.scripted_policy_red()
-        print("脚本策略: {:.5f}".format(time.time() - last_time))
-        last_time = time.time()
-        
-        world.step(actions)
-        print("环境更新: {:.5f}".format(time.time() - last_time))
-        last_time = time.time()
-        
-        world.render(frame_num=i, save_frames=False)
-        print("环境渲染: {:.5f}".format(time.time() - last_time))
-        time_list.append(time.time() - start_time)
-    
-    time_list = np.array(time_list)
-
-    print(time_list.mean(), time_list.std())
-
-    world.close()
+    env.render()
 
 
     

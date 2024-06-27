@@ -15,7 +15,7 @@ os.environ["SDL_VIDEODRIVER"] = "dummy"
 # os.environ["DISPLAY"] = ":11"
 
 from scipy.spatial import distance
-from .sce_maps import get_map_params
+from onpolicy.envs.swarm_Confrontation.sce_maps import get_map_params
 from onpolicy.utils.multi_discrete import MultiDiscrete
 from onpolicy.envs.starcraft2.multiagentenv import MultiAgentEnv
 
@@ -27,10 +27,18 @@ class BaseEnv(MultiAgentEnv):
         map_params = get_map_params(self.map_name)
         self.n_reds = map_params["n_reds"]
         self.n_blues = map_params["n_blues"]
-        self.episode_limit = args.episode_length
         self.size_x = map_params["size_x"]
         self.size_y = map_params["size_y"]
-        self.defender = map_params["defender"]
+
+        self.episode_limit = args.episode_length
+
+        # self.defender = map_params["defender"]
+        if args.scenario_name == 'defense':
+            self.defender = 'red'
+        elif args.scenario_name == 'scout':
+            self.defender = 'blue'
+        else:
+            raise ValueError("Unknown Scenario Name")
 
         # Calculate the number of agents
         self.n_agents = self.n_reds + self.n_blues
@@ -40,12 +48,12 @@ class BaseEnv(MultiAgentEnv):
         self.max_observed_enemies = 5
 
         # Set the max velocity
-        self.red_max_vel = 45.0 if self.defender == 'red' else 40.0
-        self.blue_max_vel = 45.0 if self.defender == 'blue' else 40.0
+        self.red_max_vel = 40.0 if self.defender == 'red' else 45.0
+        self.blue_max_vel = 40.0 if self.defender == 'blue' else 45.0
 
         # Set the min velocity
-        self.red_min_vel = 20.0 if self.defender == 'red' else 15.0
-        self.blue_min_vel = 20.0 if self.defender == 'blue' else 15.0
+        self.red_min_vel = 15.0 if self.defender == 'red' else 20.0
+        self.blue_min_vel = 15.0 if self.defender == 'blue' else 20.0
 
         # Set the max 角速度
         # Set the max angular velocity
@@ -170,8 +178,30 @@ class BaseEnv(MultiAgentEnv):
         self.red_out_of_bounds_num = 0
         self.blue_out_of_bounds_num = 0
 
+        self.red_out_of_bounds_total = 0
+        self.blue_out_of_bounds_total = 0
+
         self.win_counted = False
         self.defeat_counted = False
+
+        # 奖励相关的参数
+        self.explode_red_num = 0 
+        self.explode_blue_num = 0
+        self.invalid_explode_red_num = 0
+        self.collide_red_num = 0
+        self.collide_blue_num = 0
+        self.outofbound_red_num = 0
+        self.outofbound_blue_num = 0
+        
+        self.explode_red_total = 0 
+        self.explode_blue_total = 0
+        self.invalid_explode_red_total = 0
+        self.collide_red_total = 0
+        self.collide_blue_total = 0
+        self.outofbound_red_total = 0
+        self.outofbound_blue_total = 0
+        
+
 
     def seed(self, seed=None):
         if seed is None:
@@ -204,8 +234,12 @@ class BaseEnv(MultiAgentEnv):
         # Check for agents that are out of bounds for 10 time steps
         dead_or_not = self.out_of_bounds_time >= self.max_out_of_bounds_time 
 
-        self.red_out_of_bounds_num = np.sum(dead_or_not[:self.n_reds] & self.red_alives)
-        self.blue_out_of_bounds_num = np.sum(dead_or_not[self.n_reds:] & self.blue_alives)
+        self.outofbound_red_num = np.sum(dead_or_not[:self.n_reds] & self.red_alives)
+        self.outofbound_blue_num = np.sum(dead_or_not[self.n_reds:] & self.blue_alives)
+
+        self.outofbound_red_total += self.outofbound_red_num
+        self.outofbound_blue_total += self.outofbound_blue_num
+
         self.alives[dead_or_not] = False
 
 
@@ -228,6 +262,106 @@ class BaseEnv(MultiAgentEnv):
         self.blue_directions = self.directions[self.n_reds:]
         self.blue_velocities = self.velocities[self.n_reds:]
         self.blue_alives = self.alives[self.n_reds:]
+
+    def merge_state(self):
+        self.positions = np.vstack([self.red_positions, self.blue_positions])
+        self.directions = np.hstack([self.red_directions, self.blue_directions])
+        self.velocities = np.hstack([self.red_velocities, self.blue_velocities])
+        self.alives = np.hstack([self.red_alives, self.blue_alives])
+
+    def red_explode(self, explode_mask):
+        # 更新 explode_mask， 排除已经死掉的智能体
+        valid_explode_mask = explode_mask & self.red_alives
+
+        # 计算每个红方智能体与每个蓝方智能体之间的距离
+        distances_red2blue = distance.cdist(self.red_positions, self.blue_positions, 'euclidean')
+        
+        # 红方智能体自爆范围内的蓝方智能体
+        blue_in_explode_zone = distances_red2blue < self.explode_radius
+
+        # 统计无效自爆的智能体数量
+        valid_blue_mask = blue_in_explode_zone & self.blue_alives
+        self.invalid_explode_red_num = np.sum(np.sum(valid_blue_mask[valid_explode_mask], axis=1) == 0)
+        self.invalid_explode_red_total += self.invalid_explode_red_num
+
+        # 触发自爆的红方智能体将被标记为死亡
+        self.red_alives[valid_explode_mask] = False
+
+        # 将自爆范围内的蓝方智能体标记为死亡，并统计有效毁伤的蓝方智能体数量
+        self.blue_explode_mask = np.any(blue_in_explode_zone[valid_explode_mask], axis=0)
+        self.explode_blue_num = np.sum(self.blue_explode_mask & self.blue_alives)
+        self.explode_blue_total += self.explode_blue_num
+        self.blue_alives[self.blue_explode_mask] = False
+
+    def red_collide(self, collide_mask, pt):
+        """
+        红方智能体与其目标的碰撞
+        """
+        # 计算红方智能体到蓝方智能体的方向向量
+        delta_red2blue = self.blue_positions[np.newaxis, :, :] - self.red_positions[:, np.newaxis, :]   # nred x nblue x 2
+
+        # 计算红方智能体到蓝方智能体的角度
+        angles_red2blue = np.arctan2(delta_red2blue[:, :, 1], delta_red2blue[:, :, 0])                  # nred x nblue
+
+        # 计算红方智能体当前方向与到蓝方智能体的方向的角度差
+        angles_diff_red2blue = angles_red2blue - self.red_directions[:, np.newaxis]                     # nred x nblue
+        angles_diff_red2blue = (angles_diff_red2blue + np.pi) % (2 * np.pi) - np.pi
+
+        # 计算红方智能体到蓝方智能体的距离
+        distances_red2blue = distance.cdist(self.red_positions, self.blue_positions, 'euclidean')
+
+        # 创建有效性掩码，只考虑存活的红方和蓝方智能体之间的距离
+        valid_mask = self.red_alives[:, np.newaxis] & self.blue_alives[np.newaxis, :]
+
+        # 将无效的距离设置为无限大
+        distances_red2blue = np.where(valid_mask, distances_red2blue, np.inf)
+
+        # 红方智能体攻击范围内的蓝方智能体
+        blue_in_attack_zone = (distances_red2blue < self.attack_radius) & (
+            np.abs(angles_diff_red2blue) < self.attack_angle / 2
+        )
+
+        # 将不在攻击范围内的距离设置为无限大
+        distances_red2blue[~blue_in_attack_zone] = np.inf
+
+        # 找到每个红方智能体最近的蓝方智能体
+        nearest_blue_id = np.argmin(distances_red2blue, axis=1)
+
+        # 如果红方智能体没有攻击范围内的蓝方智能体，目标设为-1
+        nearest_blue_id[np.all(np.isinf(distances_red2blue), axis=1)] = -1
+
+        # 更新红方智能体的目标
+        red_targets = nearest_blue_id
+
+        # 更新 collide_mask，排除没有 target 的智能体
+        valid_collide_mask = collide_mask & (red_targets != -1) & self.red_alives
+
+        # 获取有效的 target_id
+        target_ids = red_targets[valid_collide_mask]
+        agent_ids = np.where(valid_collide_mask)[0]
+
+        # 获取红方智能体和其目标之间的距离
+        valid_distances = distances_red2blue[valid_collide_mask, target_ids]
+
+        # 判断撞击成功的情况
+        collide_success_mask = valid_distances < (self.collide_distance + self.red_velocities[valid_collide_mask] * self.dt_time)
+
+        # 获取撞击成功的 agent_id 和 target_id
+        success_agent_ids = agent_ids[collide_success_mask]
+        success_target_ids = target_ids[collide_success_mask]
+
+        self.collide_red_num = success_agent_ids.size
+        self.collide_red_total += self.collide_red_num
+
+        # 更新红方智能体和目标蓝方智能体的存活状态
+        self.red_alives[success_agent_ids] = False
+        self.blue_alives[success_target_ids] = False
+
+        # 更新红方智能体的方向
+        self.red_directions[valid_collide_mask] = angles_red2blue[valid_collide_mask, target_ids]
+        pt[valid_collide_mask] = 0
+
+        return pt
 
     def step(self, actions):
         # Get actions
@@ -407,7 +541,7 @@ class BaseEnv(MultiAgentEnv):
         alive_mask = self.red_alives
 
         # Own features
-        own_feats[alive_mask, 0:2] = self.red_positions[alive_mask] / np.array([self.size_x / 2, self.size_y / 2])
+        # own_feats[alive_mask, 0:2] = self.red_positions[alive_mask] / np.array([self.size_x / 2, self.size_y / 2])
         own_feats[alive_mask, 2] = (self.red_velocities[alive_mask] - self.red_min_vel) / (self.red_max_vel - self.red_min_vel)
         own_feats[alive_mask, 3] = self.red_directions[alive_mask] / np.pi
 
@@ -519,20 +653,19 @@ class BaseEnv(MultiAgentEnv):
         return actions
     
     def transform_position(self, position):
-        new_center_x = -self.size_x / 2
-        new_center_y = self.size_y / 2
+        new_center = np.array([-self.size_x / 2, self.size_y/2])
+        new_dir = np.array([1, -1])
 
-        transformed_x = ((position[0] - new_center_x) * self.scale_factor).astype(int)
-        transformed_y = -((position[1] - new_center_y) * self.scale_factor).astype(int)
-        return np.array([transformed_x, transformed_y])
+        transformed_position = ((position - new_center) * new_dir * self.scale_factor).astype(int)
+        
+        return transformed_position
     
     def transform_positions(self):
         # 将世界坐标转换为屏幕坐标
-        new_center_x = -self.size_x / 2
-        new_center_y = self.size_y / 2
+        new_center = np.array([-self.size_x / 2, self.size_y/2])
+        new_dir = np.array([1, -1])
 
-        self.transformed_positions[:, 0] = ((self.positions[:, 0] - new_center_x) * self.scale_factor).astype(int)
-        self.transformed_positions[:, 1] = -((self.positions[:, 1] - new_center_y) * self.scale_factor).astype(int)
+        self.transformed_positions = ((self.positions - new_center) * new_dir * self.scale_factor).astype(int)
         
     def close(self):
         if self.screen is not None:
