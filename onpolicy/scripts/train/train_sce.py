@@ -78,6 +78,7 @@ def parse_args(args, parser):
     parser.add_argument('--scenario_name', type=str,
                         default='defense', help="Which scenario to run on")
     parser.add_argument('--only_eval', type=bool, default=False)
+    parser.add_argument('--use_mix_critic', type=bool, default=False)
 
     all_args = parser.parse_known_args(args)[0]
 
@@ -165,6 +166,7 @@ def main(args):
     if all_args.env_name == "SCE":
         from onpolicy.envs.swarm_Confrontation.sce_maps import get_map_params
         num_agents = get_map_params(all_args.map_name)["n_reds"]
+        all_args.num_agents = num_agents
 
     config = {
         "all_args": all_args,

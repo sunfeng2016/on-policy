@@ -6,8 +6,8 @@ algo="rmappo"
 exp="eval-v2"
 seed_max=1
 
-train_exp="train_v2"
-train_id="run-20240626_171826-a5zru72z"
+train_exp="debug"
+train_id="run-20240629_164156-n8u87wy8"
 
 run_cmd="python"
 # run_cmd="python -m debugpy --listen 8888 --wait-for-client"
