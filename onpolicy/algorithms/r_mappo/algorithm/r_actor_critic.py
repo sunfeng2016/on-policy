@@ -174,3 +174,113 @@ class R_Critic(nn.Module):
         values = self.v_out(critic_features)
 
         return values, rnn_states
+
+
+class R_Critic_Mix(nn.Module):
+    """
+    Critic network class for MAPPO. Outputs value function predictions given centralized input (MAPPO) or
+                            local observations (IPPO).
+    :param args: (argparse.Namespace) arguments containing relevant model information.
+    :param cent_obs_space: (gym.Space) (centralized) observation space.
+    :param device: (torch.device) specifies the device to run on (cpu/gpu).
+    """
+    def __init__(self, args, cent_obs_space, device=torch.device("cpu")):
+        # cent_obs_shape: [800+80x120, 800, 1x80x120, 100]
+
+        super(R_Critic_Mix, self).__init__()
+        self.hidden_size = args.hidden_size
+        self._use_orthogonal = args.use_orthogonal
+        self._use_naive_recurrent_policy = args.use_naive_recurrent_policy
+        self._use_recurrent_policy = args.use_recurrent_policy
+        self._recurrent_N = args.recurrent_N
+        self._use_popart = args.use_popart
+        self.tpdv = dict(dtype=torch.float32, device=device)
+        init_method = [nn.init.xavier_uniform_, nn.init.orthogonal_][self._use_orthogonal]
+
+        self.cent_obs_size = cent_obs_space[0]
+        self.cent_obs_mlp_shape = cent_obs_space[1]
+        self.cent_obs_cnn_shape = cent_obs_space[2]
+        
+        self.n_agents = args.num_agents
+
+        self.mlp_base = MLPBase(args, self.cent_obs_mlp_shape)
+        self.cnn_base = CNNBase(args, self.cent_obs_cnn_shape)
+
+        if self._use_naive_recurrent_policy or self._use_recurrent_policy:
+            self.rnn = RNNLayer(self.hidden_size * 2, self.hidden_size, self._recurrent_N, self._use_orthogonal)
+
+        def init_(m):
+            return init(m, init_method, lambda x: nn.init.constant_(x, 0))
+
+        if self._use_popart:
+            self.v_out = init_(PopArt(self.hidden_size, 1, device=device))
+        else:
+            self.v_out = init_(nn.Linear(self.hidden_size, 1))
+
+        self.to(device)
+
+    def forward(self, cent_obs, rnn_states, masks):
+        """
+        Compute actions from the given inputs.
+        :param cent_obs: (np.ndarray / torch.Tensor) observation inputs into network.
+        :param rnn_states: (np.ndarray / torch.Tensor) if RNN network, hidden states for RNN.
+        :param masks: (np.ndarray / torch.Tensor) mask tensor denoting if RNN states should be reinitialized to zeros.
+
+        :return values: (torch.Tensor) value function predictions.
+        :return rnn_states: (torch.Tensor) updated RNN hidden states.
+        """
+        n_envs = cent_obs.shape[0] // self.n_agents
+
+        # Reshape and convert to torch tensors
+        cent_obs = check(cent_obs.reshape(n_envs, self.n_agents, -1)[:, 0, :]).to(**self.tpdv)  # (n_envs, state_size)
+        rnn_states = check(rnn_states).to(**self.tpdv)  # (n_envs, 1, hidden_size)
+        masks = check(masks).to(**self.tpdv)  # (n_envs, 1)
+
+        # Split inputs for MLP and CNN
+        mlp_inputs = cent_obs[:, :self.cent_obs_mlp_shape[0]]  # (n_envs, mlp_input_size)
+        cnn_inputs = cent_obs[:, self.cent_obs_mlp_shape[0]:].reshape(-1, *self.cent_obs_cnn_shape)  # (n_envs, *cnn_shape)
+
+        # Get features from MLP and CNN
+        mlp_features = self.mlp_base(mlp_inputs)  # (n_envs, hidden_size)
+        cnn_features = self.cnn_base(cnn_inputs)  # (n_envs, hidden_size)
+
+        # Concatenate features
+        critic_features = torch.cat((mlp_features, cnn_features), dim=1)  # (n_envs, hidden_size*2)
+        critic_features = critic_features.unsqueeze(1).repeat(1, self.n_agents, 1).view(n_envs * self.n_agents, -1)  # (n_envs*n_agents, hidden_size*2)
+
+        # Pass through RNN if applicable
+        if self._use_naive_recurrent_policy or self._use_recurrent_policy:
+            critic_features, rnn_states = self.rnn(critic_features, rnn_states, masks)
+
+        # Get value predictions
+        values = self.v_out(critic_features)  # (n_envs * n_agents, 1)
+
+        return values, rnn_states
+    
+    def forward_old(self, cent_obs, rnn_states, masks):
+        """
+        Compute actions from the given inputs.
+        :param cent_obs: (np.ndarray / torch.Tensor) observation inputs into network.
+        :param rnn_states: (np.ndarray / torch.Tensor) if RNN network, hidden states for RNN.
+        :param masks: (np.ndarray / torch.Tensor) mask tensor denoting if RNN states should be reinitialized to zeros.
+
+        :return values: (torch.Tensor) value function predictions.
+        :return rnn_states: (torch.Tensor) updated RNN hidden states.
+        """
+        cent_obs = check(cent_obs).to(**self.tpdv)          # (n_envs * 1, state_size)
+        rnn_states = check(rnn_states).to(**self.tpdv)      # (n_envs * n_agents, 1, hidden_size)
+        masks = check(masks).to(**self.tpdv)                # (n_envs * n_agents, 1)
+
+        mlp_inputs = cent_obs[:, :self.cent_obs_mlp_shape[0]]   # (n_envs * n_agents, 800)
+        cnn_inputs = cent_obs[:, self.cent_obs_mlp_shape[0]:].reshape(*([-1]+self.cent_obs_cnn_shape)) # (n_envs*n_agents, 1, 100, 160)
+
+        mlp_features = self.mlp_base(mlp_inputs)    # (n_envs * n_agents, hidden_size)
+        cnn_features = self.cnn_base(cnn_inputs)    # (n_envs * n_agents, hidden_size)
+
+        critic_features = torch.cat((mlp_features, cnn_features), dim=1)  # (n_envs * n_agents, hidden_size*2)
+
+        if self._use_naive_recurrent_policy or self._use_recurrent_policy:
+            critic_features, rnn_states = self.rnn(critic_features, rnn_states, masks)
+        values = self.v_out(critic_features)    # (n_envs * n_agents, 1)
+
+        return values, rnn_states

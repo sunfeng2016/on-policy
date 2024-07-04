@@ -68,8 +68,10 @@ class ACTLayer(nn.Module):
         elif self.multi_discrete:
             actions = []
             action_log_probs = []
+            id = 0
             for action_out in self.action_outs:
-                action_logit = action_out(x)
+                action_logit = action_out(x, available_actions[:, id:id+action_out.out_dim])
+                id += action_out.out_dim
                 action = action_logit.mode() if deterministic else action_logit.sample()
                 action_log_prob = action_logit.log_probs(action)
                 actions.append(action)

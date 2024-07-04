@@ -1,5 +1,5 @@
 import torch
-from onpolicy.algorithms.r_mappo.algorithm.r_actor_critic import R_Actor, R_Critic
+from onpolicy.algorithms.r_mappo.algorithm.r_actor_critic import R_Actor, R_Critic, R_Critic_Mix
 from onpolicy.utils.util import update_linear_schedule
 
 
@@ -26,7 +26,11 @@ class R_MAPPOPolicy:
         self.act_space = act_space
 
         self.actor = R_Actor(args, self.obs_space, self.act_space, self.device)
-        self.critic = R_Critic(args, self.share_obs_space, self.device)
+        
+        if args.use_mix_critic:
+            self.critic = R_Critic_Mix(args, self.share_obs_space, self.device)
+        else:
+            self.critic = R_Critic(args, self.share_obs_space, self.device)
 
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(),
                                                 lr=self.lr, eps=self.opti_eps,
