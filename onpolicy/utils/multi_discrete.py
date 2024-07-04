@@ -23,7 +23,8 @@ class MultiDiscrete(gym.Space):
         self.low = np.array([x[0] for x in array_of_param_array])
         self.high = np.array([x[1] for x in array_of_param_array])
         self.num_discrete_space = self.low.shape[0]
-        self.n = np.sum(self.high) + 2
+        # self.n = np.sum(self.high) + 2
+        self.n = np.sum(self.high - self.low + 1)
 
     def sample(self):
         """ Returns a array with one sample from each discrete action space """

@@ -13,7 +13,6 @@ class SCERunner(Runner):
     """Runner class to perform training, evaluation. and data collection for SMAC. See parent class for details."""
     def __init__(self, config):
         super(SCERunner, self).__init__(config)
-        self.image_id = 0
 
     def run(self):
         self.warmup()   
@@ -34,7 +33,7 @@ class SCERunner(Runner):
                     
                 # Obser reward and next obs
                 obs, share_obs, rewards, dones, infos, available_actions = self.envs.step(actions)
-                available_actions = None
+                # available_actions = None
 
                 data = obs, share_obs, rewards, dones, infos, available_actions, \
                        values, actions, action_log_probs, \
@@ -108,7 +107,7 @@ class SCERunner(Runner):
 
         self.buffer.share_obs[0] = share_obs.copy()
         self.buffer.obs[0] = obs.copy()
-        # self.buffer.available_actions[0] = available_actions.copy()
+        self.buffer.available_actions[0] = available_actions.copy()
 
     @torch.no_grad()
     def collect(self, step):
@@ -119,7 +118,7 @@ class SCERunner(Runner):
                                             np.concatenate(self.buffer.rnn_states[step]),
                                             np.concatenate(self.buffer.rnn_states_critic[step]),
                                             np.concatenate(self.buffer.masks[step]),
-                                            None)
+                                            np.concatenate(self.buffer.available_actions[step]))
         # [self.envs, agents, dim]
         values = np.array(np.split(_t2n(value), self.n_rollout_threads))
         actions = np.array(np.split(_t2n(action), self.n_rollout_threads))
@@ -180,11 +179,9 @@ class SCERunner(Runner):
 
         eval_episode_scout_core = []
         eval_episode_scout_comm = []
-        eval_episode_outofbound = []
-        eval_episode_invalid_explode = []
         eval_episode_be_exploded = []
         eval_episode_collide = []
-
+        eval_episode_be_collide = []
 
 
         eval_obs, eval_share_obs, eval_available_actions = self.eval_envs.reset()
@@ -200,14 +197,14 @@ class SCERunner(Runner):
                                             np.concatenate(eval_obs),
                                             np.concatenate(eval_rnn_states),
                                             np.concatenate(eval_masks),
-                                            None,
+                                            np.concatenate(eval_available_actions),
                                             deterministic=True)
             else:
                 eval_actions, eval_rnn_states = \
                     self.trainer.policy.act(np.concatenate(eval_obs),
                                             np.concatenate(eval_rnn_states),
                                             np.concatenate(eval_masks),
-                                            None,
+                                            np.concatenate(eval_available_actions),
                                             deterministic=True)
             eval_actions = np.array(np.split(_t2n(eval_actions), self.n_eval_rollout_threads))
             eval_rnn_states = np.array(np.split(_t2n(eval_rnn_states), self.n_eval_rollout_threads))
@@ -231,10 +228,9 @@ class SCERunner(Runner):
                     eval_episode_hit_num.append(eval_infos[eval_i][0]['hit_core_num'])
                     eval_episode_scout_core.append(eval_infos[eval_i][0]['scout_core_ratio'])
                     eval_episode_scout_comm.append(eval_infos[eval_i][0]['scout_comm_ratio'])
-                    eval_episode_outofbound.append(eval_infos[eval_i][0]['outofbound_ratio'])
-                    eval_episode_invalid_explode.append(eval_infos[eval_i][0]['invalid_explode_ratio'])
                     eval_episode_be_exploded.append(eval_infos[eval_i][0]['be_exploded_ratio'])
                     eval_episode_collide.append(eval_infos[eval_i][0]['collided_ratio'])
+                    eval_episode_collide.append(eval_infos[eval_i][0]['be_collided_ratio'])
                     eval_episode_win_reason.append(eval_infos[eval_i][0]['other'])
                     
                     one_episode_rewards = []
@@ -249,10 +245,9 @@ class SCERunner(Runner):
                 eval_env_infos['eval_average_episode_hit_core_num'] = eval_episode_hit_num
                 eval_env_infos['eval_average_episode_scout_core_ratio'] = eval_episode_scout_core
                 eval_env_infos['eval_average_episode_scout_comm_ratio'] = eval_episode_scout_comm
-                eval_env_infos['eval_average_episode_outofbound_ratio'] = eval_episode_outofbound
-                eval_env_infos['eval_average_episode_invalid_explode_ratio'] = eval_episode_invalid_explode
                 eval_env_infos['eval_average_episode_be_exploded_ratio'] = eval_episode_be_exploded
                 eval_env_infos['eval_average_episode_collide_ratio'] = eval_episode_collide
+                eval_env_infos['eval_average_episode_be_collide_ratio'] = eval_episode_be_collide
 
                 self.log_env(eval_env_infos, total_num_steps)
                 eval_win_rate = eval_battles_won/eval_episode
@@ -287,14 +282,14 @@ class SCERunner(Runner):
                                             np.concatenate(eval_obs),
                                             np.concatenate(eval_rnn_states),
                                             np.concatenate(eval_masks),
-                                            None,
+                                            np.concatenate(eval_available_actions),
                                             deterministic=True)
             else:
                 eval_actions, eval_rnn_states = \
                     self.trainer.policy.act(np.concatenate(eval_obs),
                                             np.concatenate(eval_rnn_states),
                                             np.concatenate(eval_masks),
-                                            None,
+                                            np.concatenate(eval_available_actions),
                                             deterministic=True)
             eval_actions = np.array(np.split(_t2n(eval_actions), self.n_eval_rollout_threads))
             eval_rnn_states = np.array(np.split(_t2n(eval_rnn_states), self.n_eval_rollout_threads))
