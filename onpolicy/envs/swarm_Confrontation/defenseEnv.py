@@ -7,9 +7,12 @@ import os
 import pygame
 import numpy as np
 
-from onpolicy.envs.swarm_Confrontation.baseEnv import BaseEnv
+try:
+    from onpolicy.envs.swarm_Confrontation.baseEnv import BaseEnv
+except:
+    from baseEnv import BaseEnv
+    
 from scipy.spatial import distance
-
 
 image_dir = "/home/ubuntu/sunfeng/MARL/on-policy/onpolicy/envs/swarm_Confrontation/"
 os.environ["SDL_VIDEODRIVER"] = "dummy"
@@ -84,70 +87,31 @@ class DefenseEnv(BaseEnv):
 
         # Reward
         self.reward_time = -0.1             # 每存活一个时间步的惩罚
-        self.reward_explode_red = -10       # 被炸掉的惩罚
-        self.reward_explode_blue = 10       # 炸掉蓝方的奖励
-        self.reward_explode_invalid = -10   # 无效自爆惩罚
+        self.reward_explode_red = -5        # 被炸掉的惩罚
         self.reward_attack_core = -20       # 核心区域被攻击的惩罚
-        self.reward_collied = 10            # 撞击成功的奖励
         self.reward_win = 3000              # 获胜奖励
-        # self.reward_win = 1000              # 获胜奖励
         self.reward_defeat = 0              # 失败奖励
-        self.reward_out_of_bound = -10      # 出界惩罚
-
-        # 计算 R_min 和 R_max
-        # 时间惩罚
-        # R_min_time_penalty = self.reward_time
-
-        # # 每步最多可能的红方智能体被炸掉、出界或无效自爆的最坏情况
-        # R_min_individual_penalty = min(
-        #     self.reward_explode_red * self.n_reds * 2,
-        #     self.reward_out_of_bound * self.n_reds * 2,
-        #     self.reward_explode_invalid * self.n_reds * 2
-        # )
-        
-        # # 核心区域被打击的最坏情况
-        # R_min_core_hit_penalty = self.reward_attack_core * self.max_attack_core_num * 2
-
-        # # 计算总的最小奖励
-        # self.R_min = R_min_time_penalty + R_min_individual_penalty + R_min_core_hit_penalty + self.reward_defeat
-
-        # # 碰撞奖励
-        # R_max_collision_reward = self.reward_collied * self.n_reds
-
-        # # 自爆奖励
-        # R_max_explode_reward = self.reward_explode_blue * self.n_blues
-
-        # self.R_max = self.reward_win + max(R_max_collision_reward, R_max_explode_reward)
-
+        self.reward_kill_blue = 5           # 每个时间步杀死蓝方奖励
 
         # 奖励值的统计信息
         self.reward_mean = 0
         self.reward_std = 1
         self.reward_alpha = 0.1  # 平滑系数
-        
 
     def reset(self):
         super().reset()
 
         self.in_threat_zone_times = np.zeros(self.n_blues)
 
-        self.explode_red_num = 0            # 每个时间步被炸毁的红方智能体数量
-        self.explode_blue_num = 0           # 每个时间步被炸毁的蓝方智能体数量
-        self.invalid_explode_num = 0        # 每个时间步无效自爆的红方智能体数量
-        self.collide_success_num = 0        # 每个时间撞击成功的红方智能体数量
         self.attack_core_num = 0            # 每个时间步红方核心区域被攻击的次数
+        self.soft_kill_num = 0              # 每个时间步软杀伤蓝方数量
 
-        self.total_explode_red_num = 0      # 当前回合红方被炸毁的智能体总数
-        self.total_explode_blue_num = 0     # 当前回合蓝方被炸毁的智能体总数
-        self.total_invalid_explode_num = 0  # 当前回合红方无效自爆的智能体总数
-        self.total_hit_core_num = 0         # 当前回合红方高价值区域被打击的总次数
-        self.total_collide_num = 0          # 当前回合碰撞的智能体数量
-        self.total_red_outOfbounds_num = 0  # 红方出界的智能体总数
-        self.total_blue_outOfbounds_num = 0 # 蓝方出界的智能体总数
+        self.attack_core_total = 0          # 当前回合红方高价值区域被打击的总次数
+        self.kill_total = 0
 
         local_obs = self.get_obs()
         global_state = [self.get_state()] * self.n_reds
-        available_actions = None
+        available_actions = self.get_avail_actions()
 
         return local_obs, global_state, available_actions
 
@@ -176,7 +140,7 @@ class DefenseEnv(BaseEnv):
         self.blue_step()
         self.merge_state()
 
-        self.check_boundaries()
+        # self.check_boundaries()
 
         # Update step counter
         self._total_steps += 1
@@ -206,7 +170,12 @@ class DefenseEnv(BaseEnv):
             "battles_game": self.battles_game,
             "battles_draw": self.timeouts,
             'bad_transition': bad_transition,
-            'hit_core_times': self.total_hit_core_num,
+            'scout_core_ratio': 0,
+            'scout_comm_ratio': 0,
+            'be_exploded_ratio': self.explode_red_total / self.n_reds, # 被炸死
+            'be_collided_ratio': self.collide_blue_total / self.n_reds, # 撞死
+            'collided_ratio': self.collide_blue_total / self.n_reds, # 撞死
+            'hit_core_num': self.attack_core_total,
             "won": self.win_counted,
             "other": res
         }
@@ -222,7 +191,7 @@ class DefenseEnv(BaseEnv):
 
         infos = [info] * self.n_reds
         
-        available_actions = None
+        available_actions = self.get_avail_actions()
 
         return local_obs, global_state, rewards, dones, infos, available_actions
 
@@ -333,7 +302,7 @@ class DefenseEnv(BaseEnv):
         in_red_core = dists_to_center < self.red_core['radius']
 
         self.attack_core_num = np.sum(in_red_core & self.blue_alives)
-        self.total_hit_core_num += self.attack_core_num
+        self.attack_core_total += self.attack_core_num
 
         self.blue_alives[in_red_core] = False
 
@@ -373,7 +342,10 @@ class DefenseEnv(BaseEnv):
         self.in_threat_zone_times[in_threat_zone] += 1
         self.in_threat_zone_times[~in_threat_zone] = 0
 
-        self.blue_alives[self.in_threat_zone_times >= self.max_in_threat_zone_time] = False
+        # 软杀伤掩码
+        soft_kill_mask = self.in_threat_zone_times >= self.max_in_threat_zone_time
+        self.soft_kill_num = np.sum(soft_kill_mask & self.blue_alives)
+        self.blue_alives[soft_kill_mask] = False
 
         return in_threat_zone, will_in_threat_zone
 
@@ -417,6 +389,7 @@ class DefenseEnv(BaseEnv):
         red_explode_mask = np.any(red_in_explode_zone[self_destruction_mask], axis=0)
 
         self.explode_red_num = np.sum(red_explode_mask & self.red_alives)
+        self.explode_red_total += self.explode_red_num
 
         self.red_alives[red_explode_mask] = False
         
@@ -543,7 +516,7 @@ class DefenseEnv(BaseEnv):
             
         return agent_positions, agent_directions
 
-    def get_reward(self, win):
+    def get_reward_old(self, win):
         reward = self.reward_time
 
         num = np.array([self.explode_red_num, self.explode_blue_num, self.invalid_explode_num, self.collide_success_num, self.attack_core_num, self.red_out_of_bounds_num])
@@ -557,70 +530,30 @@ class DefenseEnv(BaseEnv):
 
         return reward
     
-    def update_reward_stats(self, reward):
-        """更新奖励的均值和标准差"""
-        self.reward_mean = self.reward_alpha * reward + (1 - self.reward_alpha) * self.reward_mean
-        self.reward_std = np.sqrt(self.reward_alpha * (reward - self.reward_mean) ** 2 + (1 - self.reward_alpha) * self.reward_std ** 2)
-        
-    def normalize_reward(self, reward):
-        """归一化奖励值"""
-        if self.reward_std == 0:
-            return reward
-        return (reward - self.reward_mean) / (self.reward_std + 1e-8)
-    
-    def get_reward_new(self, win=False):
-        self.total_explode_red_num += self.explode_red_num
-        self.total_explode_blue_num += self.explode_blue_num
-        self.total_invalid_explode_num += self.invalid_explode_num
-        self.total_red_outOfbounds_num += self.red_out_of_bounds_num
-        self.total_blue_outOfbounds_num += self.blue_out_of_bounds_num
+    def get_reward(self, win=False):
 
         # 动态时间惩罚
-        time_penalty = self.reward_time * self._episode_steps / self.episode_limit
+        time_penalty = self.reward_time * (1 + self._episode_steps / self.episode_limit)
 
         # 红方智能体被炸掉惩罚
         red_destroyed_penalty = self.reward_explode_red * self.explode_red_num * (
-            1 + self.total_explode_red_num / self.n_reds)
+            1 + self.explode_red_total / self.n_reds)
         
         # 核心区域被打击惩罚
         core_hit_penalty = self.reward_attack_core * self.attack_core_num * (
-            1 + self.total_hit_core_num / self.max_attack_core_num)
+            1 + self.attack_core_total / self.max_attack_core_num)
         
-        # 出界惩罚
-        out_of_bounds_penalty = self.reward_out_of_bound * self.red_out_of_bounds_num * (
-            1 + self.total_red_outOfbounds_num / self.n_reds)
-
-        # 无效自爆惩罚
-        invalid_self_destruct_penalty = self.reward_explode_invalid * self.invalid_explode_num * (
-            1 + self.total_invalid_explode_num / self.n_reds)
-        
-        # 撞击毁伤蓝方智能体的奖励
-        collide_reward = self.reward_collied * self.collide_success_num
-
-        # 自爆毁伤蓝方智能体的奖励
-        self_destruct_reward = self.reward_explode_blue * self.explode_blue_num
+        # 每个时间步杀伤蓝方数量奖励
+        kill_num = self.collide_blue_num + self.explode_blue_num
+        self.kill_total += kill_num
+        kill_reward = (self.reward_kill_blue * (1 + self.kill_total // 20)) * kill_num * (1 + self.kill_total / self.n_blues)
 
         # 获胜奖励
         win_reward = self.reward_win if win else self.reward_defeat
 
-        total_reward = (win_reward + time_penalty + red_destroyed_penalty + core_hit_penalty + 
-                        out_of_bounds_penalty + invalid_self_destruct_penalty + collide_reward +
-                        self_destruct_reward)
+        total_reward = (win_reward + time_penalty + red_destroyed_penalty + core_hit_penalty + kill_reward)
         
-        R_scaled = total_reward
-
-        # R_scaled = (total_reward - self.R_min) / (self.R_max - self.R_min) * 2 - 1
-        
-        # 更新奖励统计信息
-        # self.update_reward_stats(total_reward)
-
-        # # 归一化奖励
-        # R_scaled = self.normalize_reward(total_reward)
-
-        # # 将归一化后的奖励裁剪到 [-1, 1] 范围内
-        # R_scaled = np.clip(R_scaled, -1.0, 1.0)
-
-        return R_scaled
+        return total_reward
     
     def get_result(self):
         # 计算存活的智能体数量
@@ -659,7 +592,7 @@ class DefenseEnv(BaseEnv):
         # #     win = True
         # #     info = "Remaining blue units insufficient to destroy red base. Red wins."
             
-        if self.total_hit_core_num >= self.max_attack_core_num:
+        if self.attack_core_total >= self.max_attack_core_num:
             terminated = True
             win = False
             info = "[Defeat] Base destroyed."
@@ -758,21 +691,9 @@ class DefenseEnv(BaseEnv):
 
         # 渲染存活数量文本
         time_text = self.font.render(f'Episode: {self._episode_count} Time Step: {self._episode_steps}', True, (0, 0, 0))
-        alive_text = self.font.render(f'Red Alive: {red_alive} Blue Alive: {blue_alive}', True, (0, 0, 0))
-        explode_text = self.font.render(f'Red Exploded: {self.total_explode_red_num}/{self.explode_red_num} Blue exploded: {self.total_explode_blue_num}/{self.explode_blue_num}', True, (0, 0, 0))
-        explode_text_2 = self.font.render(f'Red Invalid Explode: {self.total_invalid_explode_num}/{self.invalid_explode_num}', True, (0, 0, 0))
-        outofbounds_text = self.font.render(f'Red Outofbound: {self.total_red_outOfbounds_num}/{self.red_out_of_bounds_num} Blue Outofbound: {self.total_blue_outOfbounds_num}/{self.blue_out_of_bounds_num}', True, (0, 0, 0))
-        Hit_text = self.font.render(f"Hit Core: {self.total_hit_core_num}/{self.attack_core_num}", True, (0, 0, 0))
-        Game_text = self.font.render(f"Battles_game: {self.battles_game} Battles_won: {self.battles_won}", True, (0, 0, 0))
-
+        
         self.screen.blit(time_text, (10, 10))
-        self.screen.blit(alive_text, (10, 50))
-        self.screen.blit(explode_text, (10, 90))
-        self.screen.blit(explode_text_2, (10, 130))
-        self.screen.blit(outofbounds_text, (10, 170))
-        self.screen.blit(Hit_text, (10, 210))
-        self.screen.blit(Game_text, (10, 250))
-
+        
         pygame.display.flip()
 
         frame_dir = f"{image_dir}/Defense_frames/"
@@ -807,20 +728,20 @@ if __name__ == "__main__":
     env = DefenseEnv(args)
 
     env.reset()
-
-    env.render()
-
-
     
+    import time
+    for i in range(200):
+        start = time.time()
+        actions = env.scripted_policy_red()
+        env.step(actions)
+        env.render()
+        print(f'[frame: {i}]---[Time: {time.time() - start}]')
+
+    # indices, distances = env.find_nearest_grid()
 
 
-        
-
-
-
-
-
-        
-
-
-
+# TODO
+# # rewar 拦截越多奖励越大
+# rewar——new
+# total_kill/100
+# 软杀伤 in_threat_zone

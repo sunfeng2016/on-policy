@@ -82,16 +82,25 @@ class ScoutEnv(BaseEnv):
         self.grid_size = 50
 
         # 计算小格子的数量
-        self.num_grids_x = self.scout_width // self.grid_size
-        self.num_grids_y = self.scout_height // self.grid_size
+        # self.num_grids_x = self.scout_width // self.grid_size
+        # self.num_grids_y = self.scout_height // self.grid_size
+        self.num_grids_x = self.size_x // self.grid_size
+        self.num_grids_y = self.size_y // self.grid_size
         self.num_grids = self.num_grids_x * self.num_grids_y
 
         # 生成每个小格子的中心坐标
-        x_centers = np.linspace(-self.scout_width/2 + self.grid_size/2,
-                                self.scout_width/2 - self.grid_size/2,
+        # x_centers = np.linspace(-self.scout_width/2 + self.grid_size/2,
+        #                         self.scout_width/2 - self.grid_size/2,
+        #                         self.num_grids_x)
+        # y_centers = np.linspace(-self.scout_height/2 + self.grid_size/2,
+        #                         self.scout_height/2 - self.grid_size/2,
+        #                         self.num_grids_y)
+        
+        x_centers = np.linspace(-self.size_x/2 + self.grid_size/2,
+                                self.size_x/2 - self.grid_size/2,
                                 self.num_grids_x)
-        y_centers = np.linspace(-self.scout_height/2 + self.grid_size/2,
-                                self.scout_height/2 - self.grid_size/2,
+        y_centers = np.linspace(-self.size_y/2 + self.grid_size/2,
+                                self.size_y/2 - self.grid_size/2,
                                 self.num_grids_y)
         
         # 使用 meshgrid 创建网络
@@ -103,52 +112,91 @@ class ScoutEnv(BaseEnv):
         # 每个格子左上角的顶点坐标
         self.grid_left_tops = self.grid_centers + np.array([-self.grid_size / 2, self.grid_size / 2])
 
-        self.scout_dist = 10
+        # 飞机位置与格子的中心距离阈值
+        self.scout_dist = 25
+
+        # 蓝方防守在高价值区域的飞机的比例
+        self.guard_ratio = 0.3
 
         # 防守的距离
         self.guard_dist = 100
 
         # 修改状态空间
-        # base_state_size = self.get_state_size()
+        base_state_size = self.get_state_size()
+        state_size = [base_state_size[0] + self.num_grids, [base_state_size[0]], [1, self.num_grids_y, self.num_grids_x]]
+        self.share_observation_space = [state_size] * self.n_reds
+
         # base_state_size[0] += self.num_grids
         # base_state_size.append([self.num_grids_y, self.num_grids_x])
         # self.share_observation_space = [base_state_size] * self.n_reds
 
         # Reward
-        self.reward_time = 0.1
-        self.reward_explode_red = -10
-        self.reward_explode_blue = 5
-        self.reward_explode_invalid = -20
-        self.reward_collied_red = -10
-        self.reward_collied_blue = 5
-        self.reward_out_of_bound = -10
-        self.reward_out_of_scout = -1
-        self.reward_in_threat = -10
-        self.reward_scout_core = 20
-        self.reward_scout_comm = 5
+        # self.reward_time = 0.1
+        # self.reward_explode_red = -10
+        # self.reward_explode_blue = 5
+        # self.reward_explode_invalid = -20
+        # self.reward_collied_red = -10
+        # self.reward_collied_blue = 5
+        # self.reward_out_of_bound = -10
+        # self.reward_out_of_scout = -1
+        # self.reward_in_threat = -10
+        # self.reward_scout_core = 20
+        # self.reward_scout_comm = 5
 
-        self.reward_win = 3000
+        self.time_reward = 0.1
+        self.scout_core_reward = 2
+        self.scout_comm_reward = 1
+        self.kill_reward = 0.5
+        self.be_killed_penalty = -1
+        self.out_scout_penalty = -0.05
+        self.in_threat_penalty = -0.05
+
+        self.reward_win = 1000
         self.reward_defeat = 0
+
+        # 在威胁区的最大时间
+        self.max_in_threat_time = 5
 
 
     def reset(self):
         super().reset()
 
-        # 每个格子是否被扫描
-        self.grid_scout = np.zeros((self.num_grids_y, self.num_grids_x), dtype=bool)
+        # 每个格子的扫描情况：1：被扫描，0：未被扫描
+        self.scouted_grids = np.zeros((self.num_grids_y, self.num_grids_x), dtype=bool)
+
+        # 每个格子的类型 1: 普通区域，2：高价值区域，3：威胁区域， 4: 非侦察区域
+        self.grids_type = np.ones((self.num_grids_y, self.num_grids_x), dtype=int)
+
+        # 观测到格子信息
+        self.grids_info = np.zeros_like(self.grids_type)
 
         # 每个格子是否在高价值区域内
         self.core_grids = self.reset_core_grids()
         # 核心侦察区域的格子数目
         self.core_grids_num = np.sum(self.core_grids)
+        # 更新类型
+        self.grids_type[self.core_grids] = 2
 
         # 每个格子是否在威胁区域内
         self.threat_grids = self.reset_threat_grids()
         # 威胁区域的格子数目
         self.threat_grids_num = np.sum(self.threat_grids)
+        # 更新类型
+        self.grids_type[self.threat_grids] = 3
 
+        # 每个格子是否在非扫描区域
+        self.out_grids = self.reset_out_grids()
+        # 非侦察区域的格子数目
+        self.out_grids_num = np.sum(self.out_grids)
+        # 更新类型
+        self.grids_type[self.out_grids] = 4
+
+        # 每个格子是否是在低价值区域
+        self.comm_grids = (self.grids_type == 1)
         # 普通侦察区域的格子数目
-        self.comm_grids_num = self.num_grids - self.core_grids_num - self.threat_grids_num
+        self.comm_grids_num = np.sum(self.comm_grids)
+
+        assert self.num_grids == (self.comm_grids_num + self.core_grids_num + self.threat_grids_num + self.out_grids_num)
 
         # 核心区被侦察的格子数
         self.scouted_core_num = 0
@@ -166,15 +214,18 @@ class ScoutEnv(BaseEnv):
         self.in_threat_red_num = 0
         self.in_threat_red_total = 0
 
+        # 红方智能体进入威胁区的次数
+        self.in_threat_time = np.zeros(self.n_reds)
+
         local_obs = self.get_obs()
         
-        # agent_state = self.get_state()
-        # state = np.concatenate((agent_state, self.grid_scout.astype(float).flatten()))
-        # global_state = [state] * self.n_reds
+        agent_state = self.get_state()
+        state = np.concatenate((agent_state, self.scouted_grids.astype(float).flatten()))
+        global_state = [state] * self.n_reds
 
-        global_state = [self.get_state()] * self.n_reds
+        # global_state = [self.get_state()] * self.n_reds
 
-        available_actions = None
+        available_actions = self.get_avail_actions()
 
         return local_obs, global_state, available_actions
 
@@ -197,6 +248,19 @@ class ScoutEnv(BaseEnv):
             threat_grids |= is_threat_grids.reshape(self.num_grids_y, self.num_grids_x)
 
         return threat_grids
+    
+    def reset_out_grids(self):
+        out_grids = np.zeros((self.num_grids_y, self.num_grids_x), dtype=bool)
+        grid_centers_flat = self.grid_centers.reshape(-1, 2)  # 将 grid_centers 扁平化为二维数组
+
+        out_scout_x = (grid_centers_flat[:, 0] < -self.scout_width/2) | (grid_centers_flat[:, 0] > self.scout_width/2)
+        out_scout_y = (grid_centers_flat[:, 1] < -self.scout_height/2) | (grid_centers_flat[:, 1] > self.scout_height/2)
+        out_scout = out_scout_x | out_scout_y
+
+        out_grids = out_scout.reshape(self.num_grids_y, self.num_grids_x)
+
+        return out_grids
+
         
     def in_threat_area(self):
         in_threat = np.zeros(self.n_reds, dtype=bool)
@@ -225,7 +289,6 @@ class ScoutEnv(BaseEnv):
         # Get red actions
         at = self.acc_actions[actions[:, 0]]
         pt = self.heading_actions[actions[:, 1]]
-
         attack_t = actions[:, 2]
 
         explode_mask = (attack_t == 1)
@@ -244,13 +307,13 @@ class ScoutEnv(BaseEnv):
         self.red_positions += np.column_stack((self.red_velocities * np.cos(self.red_directions),
                                                self.red_velocities * np.sin(self.red_directions))) * self.dt_time
 
-        self.in_threat_area()
+        # self.in_threat_area()
         self.update_scout()
         
         self.blue_step()
         self.merge_state()
 
-        self.check_boundaries()
+        # self.check_boundaries()
 
         # Update step counter
         self._total_steps += 1
@@ -282,10 +345,9 @@ class ScoutEnv(BaseEnv):
             'bad_transition': bad_transition,
             'scout_core_ratio': self.scouted_core_total / self.core_grids_num,
             'scout_comm_ratio': self.scouted_comm_total / self.comm_grids_num,
-            'outofbound_ratio': self.outofbound_red_total / self.n_reds, # 出界死 （TODO）
-            'invalid_explode_ratio': self.invalid_explode_red_total / self.n_reds, # 无效自爆死
             'be_exploded_ratio': self.explode_red_total / self.n_reds, # 被炸死
-            'collided_ratio': (self.collide_blue_total + self.collide_red_total) / self.n_reds, # 撞死
+            'be_collided_ratio': self.collide_blue_total / self.n_reds, # 撞死
+            'collided_ratio': self.collide_blue_total / self.n_reds, # 撞死
             'hit_core_num': 0,
             "won": self.win_counted,
             "other": res
@@ -293,22 +355,22 @@ class ScoutEnv(BaseEnv):
 
         local_obs = self.get_obs()
 
-        # agent_state = self.get_state()
-        # state = np.concatenate((agent_state, self.grid_scout.astype(float).flatten()))
-        # global_state = [state] * self.n_reds
+        agent_state = self.get_state()
+        state = np.concatenate((agent_state, self.grids_info.astype(float).flatten()))
+        global_state = [state] * self.n_reds
 
-        global_state = [self.get_state()] * self.n_reds
+        # global_state = [self.get_state()] * self.n_reds
 
-        reward = self.get_reward(win)
-        rewards = [[reward]] * self.n_reds
+        rewards = self.get_reward(win)
+        # rewards = [[reward]] * self.n_reds
 
         dones = np.zeros((self.n_reds), dtype=bool)
         dones = np.where(terminated, True, ~self.red_alives)
 
         infos = [info] * self.n_reds
         
-        available_actions = None
-
+        available_actions = self.get_avail_actions()
+        
         return local_obs, global_state, rewards, dones, infos, available_actions
 
     def blue_explode(self):
@@ -342,6 +404,8 @@ class ScoutEnv(BaseEnv):
 
         # 将自爆范围内的红方智能体标记为死亡
         red_explode_mask = np.any(red_in_explode_zone[self_destruction_mask], axis=0)
+
+        self.be_exploded_flag = (red_explode_mask & self.red_alives)
 
         self.explode_red_num = np.sum(red_explode_mask & self.red_alives)
         self.explode_red_total += self.explode_red_num
@@ -401,6 +465,9 @@ class ScoutEnv(BaseEnv):
         # 获取撞击成功的 agent_id 和 target_id
         success_agent_ids = agent_ids[collide_success_mask]
         success_target_ids = target_ids[collide_success_mask]
+
+        self.be_collided_flag = np.zeros(self.n_reds, dtype=bool)
+        self.be_collided_flag[success_target_ids] = True
 
         self.collide_red_num = success_target_ids.size
         self.collide_red_total += self.collide_red_num
@@ -499,8 +566,50 @@ class ScoutEnv(BaseEnv):
             info = '[Defeat] Time out.'
         
         return terminated, win, info
-
+    
     def get_reward(self, win=False):
+        # 初始化每个智能体的奖励
+        rewards = np.zeros(self.n_reds, dtype=float)
+
+        # 计算奖励系数
+        episode_progress = 1 + self._episode_steps / self.episode_limit
+        dead_red_ratio = 1  + (1 - np.sum(self.red_alives) / self.n_reds)
+        dead_blue_ratio = 1 + (1 - np.sum(self.blue_alives) / self.n_blues)
+        scouted_core_ratio = 1 + self.scouted_core_total / self.core_grids_num
+        scouted_comm_ratio = 1 + self.scouted_comm_total / self.comm_grids_num
+        in_threat_progress = 1 + self.in_threat_time / self.max_in_threat_time
+
+        # 时间奖励, 存活时间越久，奖励系数越大
+        rewards += self.time_reward * self.red_alives * episode_progress
+
+        # 扫描高价值区域的奖励，扫描的区域越多，奖励系数越大
+        rewards += self.scout_core_reward * self.scout_core_grids * scouted_core_ratio
+
+        # 扫描低价值区域的奖励，扫描的区域越多，奖励系数越大
+        rewards += self.scout_comm_reward * self.scout_comm_grids * scouted_comm_ratio
+
+        # 毁伤蓝方智能体的奖励，毁伤的敌方智能体数量越多，奖励系数越大
+        kill_blue_agents = self.explode_flag | self.collide_flag
+        rewards += self.kill_reward * kill_blue_agents * dead_blue_ratio
+
+        # 获胜奖励
+        rewards += self.reward_win if win else self.reward_defeat
+
+        # 被毁伤惩罚，被毁伤的智能体越多，惩罚系数越大
+        kill_red_agents = self.be_exploded_flag | self.be_collided_flag | self.dead_in_threat
+        rewards += self.be_killed_penalty * kill_red_agents * dead_red_ratio
+
+        # 在扫描区外的惩罚，时间越久，惩罚系数越大
+        rewards += self.out_scout_penalty * self.scout_out_grids * episode_progress
+
+        # 在威胁区的惩罚，时间越久，惩罚系数越大
+        rewards += self.in_threat_penalty * self.scout_threat_grids * in_threat_progress
+
+        rewards = np.expand_dims(rewards, axis=1)
+
+        return rewards.tolist()
+
+    def get_reward_old(self, win=False):
         
         # 动态时间奖励
         time_penalty = self.reward_time * (1 + self._episode_steps / self.episode_limit)
@@ -544,9 +653,69 @@ class ScoutEnv(BaseEnv):
                         in_threat_penalty)
 
         return total_reward
-
-
+    
     def update_scout(self):
+        # 将中心点为 (0, 0) 的坐标转换为左下角为原点的坐标
+        shifted_positions = (self.red_positions + np.array([self.size_x/2, self.size_y/2])) # (100, 2)
+
+        # 计算智能体所在格子的索引
+        grid_indices_x = (shifted_positions[:, 0] // self.grid_size).astype(int)    # (100, )
+        grid_indices_y = (shifted_positions[:, 1] // self.grid_size).astype(int)    # (100, )
+
+        out_of_bound = (grid_indices_x >= self.num_grids_x) | (grid_indices_y >= self.num_grids_y)
+
+        grid_indices_x[out_of_bound] = 0
+        grid_indices_y[out_of_bound] = 0
+
+        # 获取格子的中心
+        grid_centers = self.grid_centers[grid_indices_y, grid_indices_x]            # (100, 2)
+
+        # 计算智能体位置与格子中心的距离
+        distances = np.linalg.norm(self.red_positions - grid_centers, axis=1)       # (100, )
+
+        # 判断距离小于条件的格子
+        scouted = distances <= self.scout_dist # (100, )
+        
+        # 排除出界的智能体
+        scouted &= ~out_of_bound
+
+        # 获取已经被侦察过的格子
+        already_scouted = self.scouted_grids[grid_indices_y, grid_indices_x] # (100, )
+
+        # 筛选出新的被侦察过的格子
+        new_scouted = scouted & ~already_scouted & self.red_alives # (100, )
+
+        # 更新格子的扫描情况
+        self.scouted_grids[grid_indices_y[new_scouted], grid_indices_x[new_scouted]] = True
+
+        # 更新观测到的格子信息
+        self.grids_info[self.scouted_grids] = self.grids_type[self.scouted_grids]
+
+        # 扫描到低价值区的
+        self.scout_comm_grids = np.zeros(self.n_reds, dtype=bool)
+        self.scout_comm_grids[new_scouted] = self.comm_grids[grid_indices_y[new_scouted], grid_indices_x[new_scouted]]
+        self.scouted_comm_total = np.sum(self.comm_grids & self.scouted_grids)
+
+        # 扫描到高价值区的
+        self.scout_core_grids = np.zeros(self.n_reds, dtype=bool)
+        self.scout_core_grids[new_scouted] = self.core_grids[grid_indices_y[new_scouted], grid_indices_x[new_scouted]]
+        self.scouted_core_total = np.sum(self.core_grids & self.scouted_grids)
+
+        # 扫描到威胁区的 ()
+        # self.scout_threat_grids = np.zeros(self.n_reds, dtype=bool)
+        # self.scout_threat_grids[new_scouted] = self.threat_grids[grid_indices_y[new_scouted], grid_indices_x[new_scouted]]
+        self.scout_threat_grids = self.threat_grids[grid_indices_y, grid_indices_x] & self.red_alives
+        self.in_threat_time[self.scout_threat_grids] += 1
+        self.in_threat_time[~self.scout_threat_grids] = 0
+        self.dead_in_threat = (self.in_threat_time >= self.max_in_threat_time)
+        self.red_alives[self.dead_in_threat] = False
+        
+        # 扫描到非侦察区
+        # self.scout_out_grids = np.zeros(self.n_reds, dtype=bool)
+        # self.scout_out_grids[new_scouted] = self.out_grids[grid_indices_y[new_scouted], grid_indices_x[new_scouted]]
+        self.scout_out_grids = self.out_grids[grid_indices_y, grid_indices_x] & self.red_alives
+
+    def update_scout_old(self):
         """
         更新侦察区域的扫描情况
         """
@@ -554,11 +723,11 @@ class ScoutEnv(BaseEnv):
         self.scouted_comm_num = 0
 
         # 获取存活的红方智能体位置
-        alive_reds = self.red_positions[self.red_alives]
+        alive_reds = self.red_positions[self.red_alives] #(n1, 2)
 
         # 判断智能体是否在矩形侦察区域内
-        in_scout_area = (np.abs(alive_reds[:, 0]) <= self.scout_width / 2) & (np.abs(alive_reds[:, 1]) <= self.scout_height / 2)
-        valid_positions = alive_reds[in_scout_area]
+        in_scout_area = (np.abs(alive_reds[:, 0]) <= self.scout_width / 2) & (np.abs(alive_reds[:, 1]) <= self.scout_height / 2) # (n1)
+        valid_positions = alive_reds[in_scout_area] # (n2, 2)
 
         self.outofscout_num = np.sum(~in_scout_area)
         self.outofscout_total += self.outofscout_num
@@ -567,17 +736,17 @@ class ScoutEnv(BaseEnv):
             return
 
         # 将中心点为 (0,0) 的坐标转换为左下角为原点的坐标系
-        shifted_positions = (valid_positions + np.array([self.scout_width / 2, self.scout_height / 2]))
+        shifted_positions = (valid_positions + np.array([self.scout_width / 2, self.scout_height / 2])) # (n2, 2)
 
         # 计算智能体所在的格子索引
-        grid_indices_x = (shifted_positions[:, 0] // self.grid_size).astype(int)
-        grid_indices_y = (shifted_positions[:, 1] // self.grid_size).astype(int)
+        grid_indices_x = (shifted_positions[:, 0] // self.grid_size).astype(int) # (n2,)
+        grid_indices_y = (shifted_positions[:, 1] // self.grid_size).astype(int) # (n2,)
 
         # 获取格子的中心
-        grid_centers = self.grid_centers[grid_indices_y, grid_indices_x]
+        grid_centers = self.grid_centers[grid_indices_y, grid_indices_x]    # (n2,2)
 
         # 计算智能体位置与格子中心的距离
-        distances = np.linalg.norm(valid_positions - grid_centers, axis=1)
+        distances = np.linalg.norm(valid_positions - grid_centers, axis=1)  # (n2,)
 
         # 判断距离小于10的格子
         scouted = distances < self.scout_dist
@@ -586,7 +755,7 @@ class ScoutEnv(BaseEnv):
             return
 
         # 获取已经被侦察过的格子
-        already_scouted = self.grid_scout[grid_indices_y, grid_indices_x]
+        already_scouted = self.scouted_grids[grid_indices_y, grid_indices_x]
 
         # 获取在威胁区的格子
         in_threat_area = self.threat_grids[grid_indices_y, grid_indices_x]
@@ -620,7 +789,7 @@ class ScoutEnv(BaseEnv):
         self.scouted_comm_total += self.scouted_comm_num
 
         # 更新被侦察的格子
-        self.grid_scout[unique_scouted_indices[:, 0], unique_scouted_indices[:, 1]] = True
+        self.scouted_grids[unique_scouted_indices[:, 0], unique_scouted_indices[:, 1]] = True
 
 
     def init_in_rect(self, x_range, y_range, angle, num):
@@ -658,7 +827,7 @@ class ScoutEnv(BaseEnv):
         ratios = areas / np.sum(areas)
 
         # 计算概率分布
-        probs = np.array([0.5] + list(0.5 * ratios))
+        probs = np.array([1-self.guard_ratio] + list(self.guard_ratio * ratios))
 
         # 根据概率分布生成每个组的大小
         group_sizes = np.random.multinomial(self.n_blues, probs)
@@ -765,7 +934,7 @@ class ScoutEnv(BaseEnv):
         for i in range(self.num_grids_y):
             for j in range(self.num_grids_x):
                 x, y = self.screen_grid_left_tops[i, j, :]
-                width = 0 if self.grid_scout[i, j] else 1
+                width = 0 if self.scouted_grids[i, j] else 1
                 pygame.draw.rect(self.screen, (0, 0, 0), (x, y, self.screen_grid_size, self.screen_grid_size), width)
         
         # 渲染 Plane
