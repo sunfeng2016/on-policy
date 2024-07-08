@@ -174,15 +174,23 @@ class SCERunner(Runner):
         eval_episode_rewards = []
         one_episode_rewards = []
 
-        eval_episode_hit_num = []
         eval_episode_win_reason = []
 
         eval_episode_scout_core = []
         eval_episode_scout_comm = []
-        eval_episode_be_exploded = []
-        eval_episode_collide = []
-        eval_episode_be_collide = []
 
+        eval_episode_explode = []
+        eval_episode_be_exploded = []
+        eval_episode_invalid_explode = []
+        
+        eval_episode_collide = []
+        eval_episode_be_collided = []
+
+        eval_episode_kill_num = []
+        eval_episode_hit_num = []
+        eval_episode_explode_blue = []
+        
+        eval_episode_length = []
 
         eval_obs, eval_share_obs, eval_available_actions = self.eval_envs.reset()
 
@@ -228,9 +236,14 @@ class SCERunner(Runner):
                     eval_episode_hit_num.append(eval_infos[eval_i][0]['hit_core_num'])
                     eval_episode_scout_core.append(eval_infos[eval_i][0]['scout_core_ratio'])
                     eval_episode_scout_comm.append(eval_infos[eval_i][0]['scout_comm_ratio'])
+                    eval_episode_explode.append(eval_infos[eval_i][0]['explode_ratio'])
+                    eval_episode_invalid_explode.append(eval_infos[eval_i][0]['invalid_explode_ratio'])
                     eval_episode_be_exploded.append(eval_infos[eval_i][0]['be_exploded_ratio'])
-                    eval_episode_collide.append(eval_infos[eval_i][0]['collided_ratio'])
-                    eval_episode_collide.append(eval_infos[eval_i][0]['be_collided_ratio'])
+                    eval_episode_collide.append(eval_infos[eval_i][0]['collide_ratio'])
+                    eval_episode_be_collided.append(eval_infos[eval_i][0]['be_collided_ratio'])
+                    eval_episode_kill_num.append(eval_infos[eval_i][0]['kill_num'])
+                    eval_episode_explode_blue.append(eval_infos[eval_i][0]['explode_ratio_blue'])
+                    eval_episode_length.append(eval_infos[eval_i][0]['episode_length'])
                     eval_episode_win_reason.append(eval_infos[eval_i][0]['other'])
                     
                     one_episode_rewards = []
@@ -242,12 +255,20 @@ class SCERunner(Runner):
 
                 eval_env_infos = {}
                 eval_env_infos['eval_average_episode_rewards'] = eval_episode_rewards
+
                 eval_env_infos['eval_average_episode_hit_core_num'] = eval_episode_hit_num
                 eval_env_infos['eval_average_episode_scout_core_ratio'] = eval_episode_scout_core
                 eval_env_infos['eval_average_episode_scout_comm_ratio'] = eval_episode_scout_comm
+                eval_env_infos['eval_average_episode_explode_ratio'] = eval_episode_explode
+
+                eval_env_infos['eval_average_episode_invalid_explode_ratio'] = eval_episode_invalid_explode
+                eval_env_infos['eval_average_episode_kill_num'] = eval_episode_kill_num
+                eval_env_infos['eval_average_episode_explode_blue_ratio'] = eval_episode_explode_blue
+                eval_env_infos['eval_average_episode_length'] = eval_episode_length
+
                 eval_env_infos['eval_average_episode_be_exploded_ratio'] = eval_episode_be_exploded
                 eval_env_infos['eval_average_episode_collide_ratio'] = eval_episode_collide
-                eval_env_infos['eval_average_episode_be_collide_ratio'] = eval_episode_be_collide
+                eval_env_infos['eval_average_episode_be_collide_ratio'] = eval_episode_be_collided
 
                 self.log_env(eval_env_infos, total_num_steps)
                 eval_win_rate = eval_battles_won/eval_episode

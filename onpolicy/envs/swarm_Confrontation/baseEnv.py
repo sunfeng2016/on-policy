@@ -158,6 +158,32 @@ class BaseEnv(MultiAgentEnv):
         self.bounds_len = np.linalg.norm(self.bounds_vec, axis=1)
         self.bounds_unitvec = self.bounds_vec / self.bounds_len[:, np.newaxis]
 
+        # 自爆渲染时长
+        self.explode_frame_time = 5
+        self.red_need_explode_frame = np.zeros(self.n_reds)                 # 渲染点，死的位置
+        self.blue_need_explode_frame = np.zeros(self.n_blues)
+        self.red_self_destruction_frame = np.zeros(self.n_reds)             # 渲染全，毁伤范围
+        self.blue_self_destruction_frame = np.zeros(self.n_blues)
+        self.explode_transformed_positions = np.zeros((self.n_agents, 2))
+
+        self.red_explode_mask = None
+        self.blue_explode_mask = None
+
+        self.red_self_destruction_mask = None
+        self.blue_self_destruction_mask = None
+
+        # 撞击渲染时长
+        self.collide_frame_time = 5
+        self.red_need_collide_frame = np.zeros(self.n_reds)
+        self.blue_need_collide_frame = np.zeros(self.n_blues)
+        self.collide_transformed_positions = np.zeros((self.n_agents,2,2))
+
+        self.red_collide_agent_ids = None
+        self.red_collide_target_ids = None
+
+        self.blue_collide_agent_ids = None
+        self.blue_collide_target_ids = None
+
     def reset(self):
         """
         Reset the environment.
@@ -223,11 +249,19 @@ class BaseEnv(MultiAgentEnv):
         self.outofbound_red_total = 0
         self.outofbound_blue_total = 0
 
+        
+        self.red_self_destruction_num = 0
+        self.red_self_destruction_total = 0
+
+        self.blue_self_destruction_num = 0
+        self.blue_self_destruction_total = 0
+
         # 攻击相关的参数
         self.explode_flag = np.zeros(self.n_reds, dtype=bool)
         self.be_exploded_flag = np.zeros(self.n_reds, dtype=bool)
         self.collide_flag = np.zeros(self.n_reds, dtype=bool)
         self.be_collided_flag = np.zeros(self.n_reds, dtype=bool)
+        self.invalid_explode_flag = np.zeros(self.n_reds, dtype=bool)
         
     def seed(self, seed=None):
         if seed is None:
@@ -295,8 +329,44 @@ class BaseEnv(MultiAgentEnv):
         self.alives = np.hstack([self.red_alives, self.blue_alives])
 
     def red_explode(self, explode_mask):
+        # 更新 explode_mask，排除已经死掉的智能体
+        valid_explode_mask = explode_mask & self.red_alives
+
+        # 记录红方自爆的智能体，用作渲染
+        self.red_self_destruction_mask = valid_explode_mask
+
+        # 计算红方智能体自爆范围内的蓝方智能体
+        distances_red2blue = distance.cdist(self.red_positions[valid_explode_mask], self.blue_positions, 'euclidean')
+        blue_in_explode_zone = distances_red2blue < self.explode_radius
+
+        # 触发自爆的红方智能体将标记为死亡
+        self.red_alives[valid_explode_mask] = False
+        self.red_self_destruction_num = np.sum(valid_explode_mask)
+        self.red_self_destruction_total += self.red_self_destruction_num
+
+        # 统计无效自爆的智能体数量
+        valid_blue_mask = blue_in_explode_zone & self.blue_alives
+        valid_explode = np.sum(valid_blue_mask, axis=1) != 0
+        self.invalid_explode_red_num = np.sum(~valid_explode)
+        self.invalid_explode_red_total += self.invalid_explode_red_num
+
+        # 更新自爆和无效自爆
+        self.explode_flag[valid_explode_mask] = valid_explode
+        self.invalid_explode_flag[valid_explode_mask] = ~valid_explode
+
+        # 将自爆范围内的蓝方智能体标记为死亡，并统计有效毁伤的蓝方智能体数量
+        blue_explode_mask = np.any(blue_in_explode_zone, axis=0) & self.blue_alives
+        self.explode_blue_num = np.sum(blue_explode_mask)
+        self.explode_blue_total += self.explode_blue_num
+        self.blue_alives[blue_explode_mask] = False
+        self.blue_explode_mask = blue_explode_mask
+
+    def red_explode_old(self, explode_mask):
         # 更新 explode_mask， 排除已经死掉的智能体
         valid_explode_mask = explode_mask & self.red_alives
+
+        # 记录红方自爆的智能体，用作渲染
+        self.red_self_destruction_mask = valid_explode_mask
 
         # 计算每个红方智能体与每个蓝方智能体之间的距离
         distances_red2blue = distance.cdist(self.red_positions, self.blue_positions, 'euclidean')
@@ -312,6 +382,7 @@ class BaseEnv(MultiAgentEnv):
         # 触发自爆的红方智能体将被标记为死亡
         self.red_alives[valid_explode_mask] = False
         self.explode_flag[valid_explode_mask] = (np.sum(valid_blue_mask[valid_explode_mask], axis=1) != 0)
+        self.invalid_explode_flag[valid_explode_mask] = (np.sum(valid_blue_mask[valid_explode_mask], axis=1) == 0)
 
         # 将自爆范围内的蓝方智能体标记为死亡，并统计有效毁伤的蓝方智能体数量
         self.blue_explode_mask = np.any(blue_in_explode_zone[valid_explode_mask], axis=0)
@@ -320,6 +391,51 @@ class BaseEnv(MultiAgentEnv):
         self.blue_alives[self.blue_explode_mask] = False
 
     def red_collide(self, collide_mask, pt):
+        """
+        红方智能体与其目标的碰撞
+        """
+        # 更新红方智能体的目标
+        red_targets = self.red_targets
+
+        # 更新 collide_mask，排除没有 target 的智能体
+        valid_collide_mask = collide_mask & (red_targets != -1) & self.red_alives
+
+        # 获取有效的 target_id
+        target_ids = red_targets[valid_collide_mask]
+        agent_ids = np.where(valid_collide_mask)[0]
+
+        # 获取红方智能体和其目标之间的距离
+        valid_distances = self.distances_red2blue[valid_collide_mask, target_ids]
+
+        # 判断撞击成功的情况
+        collide_success_mask = valid_distances < (self.collide_distance + self.red_velocities[valid_collide_mask] * self.dt_time)
+
+        # 获取撞击成功的 agent_id 和 target_id
+        success_agent_ids = agent_ids[collide_success_mask]
+        success_target_ids = target_ids[collide_success_mask]
+
+        self.collide_blue_num = success_agent_ids.size
+        self.collide_blue_total += self.collide_blue_num
+
+        # 记录红方撞击成功的智能体，用作渲染
+        self.red_collide_agent_ids = success_agent_ids
+        self.red_collide_target_ids = success_target_ids
+
+        # 更新红方智能体和目标蓝方智能体的存活状态
+        self.red_alives[success_agent_ids] = False
+        self.blue_alives[success_target_ids] = False
+
+        # 更新碰撞标记
+        self.collide_flag = np.zeros(self.n_reds, dtype=bool)
+        self.collide_flag[success_agent_ids] = True
+
+        # 更新红方智能体的方向
+        self.red_directions[valid_collide_mask] = self.angles_red2blue[valid_collide_mask, target_ids]
+        pt[valid_collide_mask] = 0
+
+        return pt
+
+    def red_collide_old(self, collide_mask, pt):
         """
         红方智能体与其目标的碰撞
         """
@@ -378,6 +494,10 @@ class BaseEnv(MultiAgentEnv):
 
         self.collide_blue_num = success_agent_ids.size
         self.collide_blue_total += self.collide_blue_num
+
+        # 记录红方撞击成功的智能体，用作渲染
+        self.red_collide_agent_ids = success_agent_ids
+        self.red_collide_target_ids = success_target_ids
 
         # 更新红方智能体和目标蓝方智能体的存活状态
         self.red_alives[success_agent_ids] = False
@@ -865,6 +985,147 @@ class BaseEnv(MultiAgentEnv):
         if save_frames:
             frame_path = f"./frames/frame_{frame_num:04d}.png"
             pygame.image.save(self.screen, frame_path)
+
+    def render_explode(self):
+        
+        red_color = (255, 0, 0)
+        blue_color = (0, 0, 255)
+
+        for i in range(self.n_reds):
+
+            # 红方自爆
+            if self.red_self_destruction_mask[i] == 1:
+                self.red_self_destruction_frame[i] = 1
+                
+                # 记录爆炸时的位置（transformed positions在爆炸后也会发生改变）
+                self.explode_transformed_positions[i] = self.transformed_positions[i]
+                self.red_need_explode_frame[i] = self.explode_frame_time
+            
+            # 红方被爆
+            if self.red_explode_mask[i] == 1:
+                self.explode_transformed_positions[i] = self.transformed_positions[i]
+                self.red_need_explode_frame[i] = self.explode_frame_time
+
+            # 爆炸渲染
+            if self.red_need_explode_frame[i] != 0:
+
+                # 自爆范围渲染
+                if self.red_self_destruction_frame[i] == 1:
+                    pygame.draw.circle(self.screen, red_color, self.explode_transformed_positions[i], radius=self.explode_radius, width=2)
+
+                # 爆炸痕迹渲染
+                pygame.draw.circle(self.screen, red_color, self.explode_transformed_positions[i], radius=5)
+                self.red_need_explode_frame[i] -= 1
+
+        for i in range(self.n_blues):
+
+            # 蓝方自爆
+            if self.blue_self_destruction_mask[i] == 1:
+                self.blue_self_destruction_frame[i] = 1
+                self.explode_transformed_positions[i+self.n_reds] = self.transformed_positions[i+self.n_reds]
+                self.blue_need_explode_frame[i] = self.explode_frame_time
+            
+            # 蓝方被爆
+            if self.blue_explode_mask[i] == 1:
+                self.explode_transformed_positions[i+self.n_reds] = self.transformed_positions[i+self.n_reds]
+                self.blue_need_explode_frame[i] = self.explode_frame_time
+
+            # 爆炸渲染
+            if self.blue_need_explode_frame[i] != 0:
+
+                # 自爆范围渲染
+                if self.blue_self_destruction_frame[i] == 1:
+                    pygame.draw.circle(self.screen, blue_color, self.explode_transformed_positions[i+self.n_reds], radius=self.explode_radius, width=2)
+
+                # 爆炸痕迹渲染
+                pygame.draw.circle(self.screen, blue_color, self.explode_transformed_positions[i+self.n_reds], radius=5)
+                self.blue_need_explode_frame[i] -= 1
+
+    def render_collide(self):
+        
+        red_color = (255, 0, 0)
+        blue_color = (0, 0, 255)
+
+        if self.red_collide_agent_ids.size > 0:
+
+            for i in range(len(self.red_collide_agent_ids)):
+
+                # 撞击的红方的位置
+                agent_id = self.red_collide_agent_ids[i]
+                agent_pos = self.transformed_positions[agent_id]
+                self.collide_transformed_positions[agent_id][0] = agent_pos
+                self.red_need_collide_frame[agent_id] = self.collide_frame_time
+
+                # 被撞击的蓝方的位置
+                target_id = self.red_collide_target_ids[i]
+                target_pos = self.transformed_positions[target_id+self.n_reds]
+                self.collide_transformed_positions[agent_id][1] = target_pos
+                self.blue_need_collide_frame[target_id] = self.collide_frame_time
+
+        if self.blue_collide_agent_ids is not None:
+
+            for i in range(len(self.blue_collide_agent_ids)):
+
+                # 撞击的蓝方的位置
+                agent_id = self.blue_collide_agent_ids[i]
+                agent_pos = self.transformed_positions[agent_id+self.n_reds]
+                self.collide_transformed_positions[agent_id+self.n_reds][0] = agent_pos
+                self.blue_need_collide_frame[agent_id] = self.collide_frame_time
+
+                # 被撞击的红方的位置
+                target_id = self.blue_collide_target_ids[i]
+                target_pos = self.transformed_positions[target_id]
+                self.collide_transformed_positions[agent_id+self.n_reds][1] = target_pos
+                self.red_need_collide_frame[target_id] = self.collide_frame_time
+
+        for i in range(self.n_reds):
+
+            if self.red_need_collide_frame[i] != 0:
+
+                start_pos = self.collide_transformed_positions[i][0]
+                end_pos = self.collide_transformed_positions[i][1]
+
+                pygame.draw.circle(self.screen, red_color, self.collide_transformed_positions[i][0], radius=3)
+                pygame.draw.circle(self.screen, blue_color, self.collide_transformed_positions[i][1], radius=3)
+
+                draw_arrow(self.screen, start_pos, end_pos, color = red_color)
+                self.red_need_collide_frame[i] -= 1
+
+        for i in range(self.n_blues):
+
+            if self.blue_need_collide_frame[i] != 0:
+
+                start_pos = self.collide_transformed_positions[i+self.n_reds][0]
+                end_pos = self.collide_transformed_positions[i+self.n_reds][1]
+
+                pygame.draw.circle(self.screen, blue_color, self.collide_transformed_positions[i+self.n_reds][0], radius=3)
+                pygame.draw.circle(self.screen, red_color, self.collide_transformed_positions[i+self.n_reds][1], radius=3)
+
+                draw_arrow(self.screen, start_pos, end_pos, color = blue_color)
+                self.blue_need_collide_frame[i] -= 1
+
+def draw_arrow(screen, start_pos, end_pos, color):
+
+    import math
+
+    width = 3 # 箭头线条宽度
+    arrow_length = 10  # 箭头三角形的边长
+
+    # 计算箭头的角度
+    angle = math.atan2(end_pos[1] - start_pos[1], end_pos[0] - start_pos[0])
+
+    # 计算箭头三角形的三个顶点
+    arrow_points = [
+        (end_pos[0], end_pos[1]),
+        (end_pos[0] - arrow_length * math.cos(angle - math.pi / 6), end_pos[1] - arrow_length * math.sin(angle - math.pi / 6)),
+        (end_pos[0] - arrow_length * math.cos(angle + math.pi / 6), end_pos[1] - arrow_length * math.sin(angle + math.pi / 6))
+    ]
+
+    # 画箭头线条
+    pygame.draw.line(screen, color, start_pos, end_pos, width)
+
+    # 画箭头三角形
+    pygame.draw.polygon(screen, color, arrow_points)
             
 
 def create_gif(frame_folder, output_path,  fps=10):

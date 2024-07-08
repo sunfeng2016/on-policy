@@ -43,6 +43,9 @@ class DefenseEnv(BaseEnv):
             [[2750.0, -500.0], [3134.0, -884.0]],
         ])
 
+        # 鼓励红方智能体往基地附近飞
+        self.red_target_area = [1750, 2750, -1000, 1000]
+
         self.red_lines_vec = self.red_lines[:, 1, :] - self.red_lines[:, 0, :]
         self.red_lines_len = np.linalg.norm(self.red_lines_vec, axis=1)
         self.red_lines_unitvec = self.red_lines_vec / self.red_lines_len[:, np.newaxis]
@@ -92,6 +95,8 @@ class DefenseEnv(BaseEnv):
         self.reward_win = 3000              # 获胜奖励
         self.reward_defeat = 0              # 失败奖励
         self.reward_kill_blue = 5           # 每个时间步杀死蓝方奖励
+        self.reward_near_area = 0.2         # 靠近目标区域的奖励
+        self.reward_away_area = -0.2
 
         # 奖励值的统计信息
         self.reward_mean = 0
@@ -108,6 +113,8 @@ class DefenseEnv(BaseEnv):
 
         self.attack_core_total = 0          # 当前回合红方高价值区域被打击的总次数
         self.kill_total = 0
+
+        self.dist2area = None               # 红方智能体与目标区域的距离 
 
         local_obs = self.get_obs()
         global_state = [self.get_state()] * self.n_reds
@@ -170,13 +177,18 @@ class DefenseEnv(BaseEnv):
             "battles_game": self.battles_game,
             "battles_draw": self.timeouts,
             'bad_transition': bad_transition,
-            'scout_core_ratio': 0,
-            'scout_comm_ratio': 0,
-            'be_exploded_ratio': self.explode_red_total / self.n_reds, # 被炸死
-            'be_collided_ratio': self.collide_blue_total / self.n_reds, # 撞死
-            'collided_ratio': self.collide_blue_total / self.n_reds, # 撞死
-            'hit_core_num': self.attack_core_total,
-            "won": self.win_counted,
+            'explode_ratio': self.red_self_destruction_total / self.n_reds, # 红方主动自爆的比例
+            'be_exploded_ratio': self.explode_red_total / self.n_reds, # 红方被自爆的比例
+            'invalid_explode_ratio': self.invalid_explode_red_total / self.n_reds, # 红方无效自爆的比例
+            'collide_ratio': self.collide_blue_total / self.n_reds,   # 红方主动撞击的比例
+            'be_collided_ratio': self.collide_red_total / self.n_reds, # 红方被撞击的比例
+            'kill_num': self.kill_total, # 红方毁伤蓝方的总数
+            'hit_core_num': self.attack_core_total, # 高价值区域被打击的次数
+            'explode_ratio_blue': self.blue_self_destruction_total / self.n_blues, # 蓝方主动自爆的比例
+            'scout_core_ratio': 0, # 高价值区域被侦察的比例
+            'scout_comm_ratio': 0, # 普通区域被侦察的比例
+            'episode_length': self._episode_steps, # 轨迹长度
+            'won': self.win_counted,
             "other": res
         }
 
@@ -365,28 +377,36 @@ class DefenseEnv(BaseEnv):
         distances_blue2red = distance.cdist(self.blue_positions, self.red_positions, 'euclidean')
 
         # 蓝方智能体自爆范围内的红方智能体
-        red_in_explode_zone = distances_blue2red < self.explode_radius
+        red_in_explode_zone = (distances_blue2red < self.explode_radius) & self.red_alives
 
         # 蓝方智能体自爆的掩码
         self_destruction_mask = np.zeros(self.n_blues, dtype=bool)
 
-        if alive_percentage > 0.8:
+        if alive_percentage >= 0.8:
             # 第一条规则：存活比例超过80%且自爆范围内的红方智能体数量超过2则自爆
             red_counts_in_zone = np.sum(red_in_explode_zone, axis=1)
-            self_destruction_mask = red_counts_in_zone > 2
+            self_destruction_mask = red_counts_in_zone >= 2
         
         elif 0.6 < alive_percentage <= 0.8:
             # 第二条规则：如果蓝方存活智能体的数量在60%和80%之间且自爆范围内红方智能体的数量超过3,则自爆
             red_counts_in_zone = np.sum(red_in_explode_zone, axis=1)
-            self_destruction_mask = red_counts_in_zone > 3
+            self_destruction_mask = red_counts_in_zone >= 3
         
         self_destruction_mask &= self.blue_alives
+
+        # 记录蓝方自爆的智能体，用作渲染
+        self.blue_self_destruction_mask = self_destruction_mask
+        self.blue_self_destruction_num = np.sum(self_destruction_mask)
+        self.blue_self_destruction_total += self.blue_self_destruction_num
 
         # 触发自爆的蓝方智能体将被标记为死亡
         self.blue_alives[self_destruction_mask] = False
 
         # 将自爆范围内的红方智能体标记为死亡
         red_explode_mask = np.any(red_in_explode_zone[self_destruction_mask], axis=0)
+
+        # 记录自爆范围内的红方智能体，用作渲染
+        self.red_explode_mask = red_explode_mask & self.red_alives
 
         self.explode_red_num = np.sum(red_explode_mask & self.red_alives)
         self.explode_red_total += self.explode_red_num
@@ -530,7 +550,7 @@ class DefenseEnv(BaseEnv):
 
         return reward
     
-    def get_reward(self, win=False):
+    def get_reward_0705(self, win=False):
 
         # 动态时间惩罚
         time_penalty = self.reward_time * (1 + self._episode_steps / self.episode_limit)
@@ -554,6 +574,134 @@ class DefenseEnv(BaseEnv):
         total_reward = (win_reward + time_penalty + red_destroyed_penalty + core_hit_penalty + kill_reward)
         
         return total_reward
+
+    def get_dist_reward_old(self):
+        """
+        计算智能体在目标区域内的奖励和惩罚，并根据地图大小适当缩放距离惩罚。
+        
+        参数:
+        positions (numpy.ndarray): 形状为 (n, 2) 的数组，包含每个智能体的位置。
+        target_area (tuple): 目标区域的边界 (x_min, x_max, y_min, y_max)。
+        map_width (float): 地图的宽度。
+        map_height (float): 地图的高度。
+        
+        返回:
+        numpy.ndarray: 包含每个智能体的奖励的数组。
+        """
+
+        # 获取红方目标矩形区域的边界
+        x_min, x_max, y_min, y_max = self.red_target_area
+
+        # 初始化奖励数组
+        rewards = np.zeros(self.n_reds)
+
+        # 判断智能体是否在目标区域内
+        in_area = (x_min <= self.red_positions[:, 0]) & (self.red_positions[:, 0] <= x_max) & \
+              (y_min <= self.red_positions[:, 1]) & (self.red_positions[:, 1] <= y_max)
+
+        # 进入区域的智能体奖励
+        rewards[in_area] += self.reward_near_core
+
+        # 计算离区域边界最短的距离
+        dx = np.maximum(x_min - self.red_positions[:, 0], 0, self.red_positions[:, 0] - x_max)
+        dy = np.maximum(y_min - self.red_positions[:, 1], 0, self.red_positions[:, 1] - y_max)
+        distance_penalty = dx + dy
+            
+
+        # 地图对角线距离
+        map_diagonal = np.sqrt(self.size_x**2 + self.size_y**2)
+
+        # 缩放距离惩罚
+        scaled_distance_penalty = distance_penalty / map_diagonal
+
+        # 给不在区域内的智能体分配距离惩罚
+        rewards[~in_area] -= scaled_distance_penalty[~in_area]
+
+        return rewards
+    
+    def get_dist_reward(self):
+        # 获取红方目标矩形区域的边界
+        x_min, x_max, y_min, y_max = self.red_target_area
+
+        # 初始化奖励数组
+        rewards = np.zeros(self.n_reds)
+
+        # 获取红方智能体的当前位置
+        red_x, red_y = self.red_positions[:, 0], self.red_positions[:, 1]
+
+        # 判断智能体是否在目标区域内
+        in_area = (x_min <= red_x) & (red_x <= x_max) & (y_min <= red_y) & (y_min <= y_max)
+        
+        # 筛选出不在目标区域但仍然存活的智能体
+        out_area = ~in_area & self.red_alives 
+
+        # 计算离区域边界最短的距离
+        dx = np.maximum(x_min - red_x, 0, red_x - x_max)
+        dy = np.maximum(y_min - red_y, 0, red_y - y_max)
+        distance2area = dx + dy
+
+        # 计算奖励
+        if self.dist2area is not None:
+            rewards[out_area] = np.where(distance2area[out_area] < self.dist2area[out_area], 
+                                        self.reward_near_area, self.reward_away_area)
+            self.dist2area[out_area] = distance2area[out_area]
+            self.dist2area[~out_area] = 0
+
+        return rewards
+
+    
+    def get_dist_reward(self):
+        # 获取红方目标矩形区域的边界
+        x_min, x_max, y_min, y_max = self.red_target_area
+
+        # 初始化奖励数组
+        rewards = np.zeros(self.n_reds)
+
+        # 判断智能体是否在目标区域内
+        in_area = (x_min <= self.red_positions[:, 0]) & (self.red_positions[:, 0] <= x_max) & \
+              (y_min <= self.red_positions[:, 1]) & (self.red_positions[:, 1] <= y_max)
+        
+        out_area = ~in_area & self.red_alives 
+
+        # 计算离区域边界最短的距离
+        dx = np.maximum(x_min - self.red_positions[:, 0], 0, self.red_positions[:, 0] - x_max)
+        dy = np.maximum(y_min - self.red_positions[:, 1], 0, self.red_positions[:, 1] - y_max)
+        distance2area = dx + dy
+
+        if self.dist2area is not None:
+            rewards[out_area] = np.where(distance2area < self.dist2area, self.reward_near_area, self.reward_away_area)[out_area]
+            self.dist2area = distance2area.copy()
+
+        return rewards
+
+    def get_reward(self, win=False):
+
+        # 动态时间惩罚
+        time_penalty = self.reward_time * (1 + self._episode_steps / self.episode_limit)
+
+        dist_rewards = self.get_dist_reward()
+        dist_reward = np.sum(dist_rewards) 
+
+        # 红方智能体被炸掉惩罚
+        red_destroyed_penalty = self.reward_explode_red * self.explode_red_num * (
+            1 + self.explode_red_total / self.n_reds)
+        
+        # 核心区域被打击惩罚
+        core_hit_penalty = self.reward_attack_core * self.attack_core_num * (
+            1 + self.attack_core_total / self.max_attack_core_num)
+        
+        # 每个时间步杀伤蓝方数量奖励
+        kill_num = self.collide_blue_num + self.explode_blue_num
+        self.kill_total += kill_num
+        kill_reward = (self.reward_kill_blue * (1 + self.kill_total // 10)) * kill_num * (1 + self.kill_total / self.n_blues)
+
+        # 获胜奖励
+        # win_reward = 0
+
+        total_reward = (time_penalty + dist_reward + red_destroyed_penalty + core_hit_penalty + kill_reward)
+        
+        return total_reward
+    
     
     def get_result(self):
         # 计算存活的智能体数量
@@ -686,14 +834,24 @@ class DefenseEnv(BaseEnv):
                 self.screen.blit(rotated_img, new_rect)
 
         # 计算存活的智能体数量
-        red_alive = sum(self.alives[:self.n_reds])
-        blue_alive = sum(self.alives[self.n_reds:])
+        red_alive = sum(self.red_alives)
+        blue_alive = sum(self.blue_alives)
 
         # 渲染存活数量文本
-        time_text = self.font.render(f'Episode: {self._episode_count} Time Step: {self._episode_steps}', True, (0, 0, 0))
+        time_text = self.font.render(f'Episode: {self._episode_count} Time Step: {self._episode_steps} Win count: {self.battles_won}', True, (0, 0, 0))
+        red_text = self.font.render(f'Red alives: {red_alive} Red explode: {self.explode_blue_total} Red collide: {self.collide_blue_total}', True, (0, 0, 0))
+        blue_text = self.font.render(f'Blue alives: {blue_alive} Blue explode: {self.explode_red_total} Blue hit: {self.attack_core_total}', True, (0, 0, 0))
         
         self.screen.blit(time_text, (10, 10))
-        
+        self.screen.blit(red_text, (10, 50))
+        self.screen.blit(blue_text, (10, 90))
+
+        # 渲染自爆效果
+        self.render_explode()
+
+        # 渲染碰撞效果
+        self.render_collide()
+
         pygame.display.flip()
 
         frame_dir = f"{image_dir}/Defense_frames/"
@@ -730,7 +888,7 @@ if __name__ == "__main__":
     env.reset()
     
     import time
-    for i in range(200):
+    for i in range(50):
         start = time.time()
         actions = env.scripted_policy_red()
         env.step(actions)
@@ -738,10 +896,3 @@ if __name__ == "__main__":
         print(f'[frame: {i}]---[Time: {time.time() - start}]')
 
     # indices, distances = env.find_nearest_grid()
-
-
-# TODO
-# # rewar 拦截越多奖励越大
-# rewar——new
-# total_kill/100
-# 软杀伤 in_threat_zone

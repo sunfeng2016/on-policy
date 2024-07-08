@@ -343,15 +343,21 @@ class ScoutEnv(BaseEnv):
             "battles_game": self.battles_game,
             "battles_draw": self.timeouts,
             'bad_transition': bad_transition,
-            'scout_core_ratio': self.scouted_core_total / self.core_grids_num,
-            'scout_comm_ratio': self.scouted_comm_total / self.comm_grids_num,
-            'be_exploded_ratio': self.explode_red_total / self.n_reds, # 被炸死
-            'be_collided_ratio': self.collide_blue_total / self.n_reds, # 撞死
-            'collided_ratio': self.collide_blue_total / self.n_reds, # 撞死
-            'hit_core_num': 0,
-            "won": self.win_counted,
+            'explode_ratio': self.red_self_destruction_total / self.n_reds, # 红方主动自爆的比例
+            'be_exploded_ratio': self.explode_red_total / self.n_reds, # 红方被自爆的比例
+            'invalid_explode_ratio': self.invalid_explode_red_total / self.n_reds, # 红方无效自爆的比例
+            'collide_ratio': self.collide_blue_total / self.n_reds,   # 红方主动撞击的比例
+            'be_collided_ratio': self.collide_red_total / self.n_reds, # 红方被撞击的比例
+            'kill_num': self.explode_blue_total + self.collide_blue_total, # 红方毁伤蓝方的总数
+            'hit_core_num': 0, # 高价值区域被打击的次数
+            'explode_ratio_blue': self.blue_self_destruction_total / self.n_blues, # 蓝方主动自爆的比例
+            'scout_core_ratio': self.scouted_core_total / self.core_grids_num, # 高价值区域被侦察的比例
+            'scout_comm_ratio': self.scouted_comm_total / self.comm_grids_num, # 普通区域被侦察的比例
+            'episode_length': self._episode_steps, # 轨迹长度
+            'won': self.win_counted,
             "other": res
         }
+
 
         local_obs = self.get_obs()
 
@@ -390,7 +396,7 @@ class ScoutEnv(BaseEnv):
         distances_blue2red = distance.cdist(self.blue_positions, self.red_positions, 'euclidean')
 
         # 蓝方智能体自爆范围内的红方智能体
-        red_in_explode_zone = distances_blue2red < self.explode_radius
+        red_in_explode_zone = (distances_blue2red < self.explode_radius) & self.red_alives
         red_counts_in_zone = np.sum(red_in_explode_zone, axis=1)
 
         if alive_percentage >= 0.7:
@@ -402,16 +408,25 @@ class ScoutEnv(BaseEnv):
 
         self_destruction_mask &= self.blue_alives
 
+        # 记录蓝方自爆的智能体，用作渲染
+        self.blue_self_destruction_mask = self_destruction_mask
+        self.blue_self_destruction_num = np.sum(self_destruction_mask)
+        self.blue_self_destruction_total += self.blue_self_destruction_num
+
         # 将自爆范围内的红方智能体标记为死亡
         red_explode_mask = np.any(red_in_explode_zone[self_destruction_mask], axis=0)
 
         self.be_exploded_flag = (red_explode_mask & self.red_alives)
 
+        # 记录自爆范围内的红方智能体，用作渲染
+        self.red_explode_mask = red_explode_mask & self.red_alives
+
         self.explode_red_num = np.sum(red_explode_mask & self.red_alives)
         self.explode_red_total += self.explode_red_num
 
         self.red_alives[red_explode_mask] = False
-
+        self.blue_alives[self_destruction_mask] = False
+        
     def blue_collide(self, pt):
         # 计算蓝方智能体到红方智能体的方向向量
         delta_blue2red = self.red_positions[np.newaxis, :, :] - self.blue_positions[:, np.newaxis, :]
@@ -465,6 +480,10 @@ class ScoutEnv(BaseEnv):
         # 获取撞击成功的 agent_id 和 target_id
         success_agent_ids = agent_ids[collide_success_mask]
         success_target_ids = target_ids[collide_success_mask]
+
+        # 记录蓝方撞击成功的智能体，用作渲染
+        self.blue_collide_agent_ids = success_agent_ids
+        self.blue_collide_target_ids = success_target_ids
 
         self.be_collided_flag = np.zeros(self.n_reds, dtype=bool)
         self.be_collided_flag[success_target_ids] = True
@@ -931,12 +950,25 @@ class ScoutEnv(BaseEnv):
                                self.transformed_circles_radius[i], width=self.circles_width[i])
             
         # 渲染网格
+        # for i in range(self.num_grids_y):
+        #     for j in range(self.num_grids_x):
+        #         if self.out_grids[i,j]: 
+        #             continue
+        #         else:
+        #             x, y = self.screen_grid_left_tops[i, j, :]
+        #             width = 0 if self.scouted_grids[i, j] else 1
+        #             pygame.draw.rect(self.screen, (0, 0, 0), (x, y, self.screen_grid_size, self.screen_grid_size), width)
+        
         for i in range(self.num_grids_y):
             for j in range(self.num_grids_x):
-                x, y = self.screen_grid_left_tops[i, j, :]
-                width = 0 if self.scouted_grids[i, j] else 1
-                pygame.draw.rect(self.screen, (0, 0, 0), (x, y, self.screen_grid_size, self.screen_grid_size), width)
-        
+                if self.out_grids[i,j] or not self.scouted_grids[i, j]: 
+                    continue
+                else:
+                    x, y = self.screen_grid_left_tops[i, j, :]
+                    # width = 0 if self.scouted_grids[i, j] else 1
+                    width = 1
+                    pygame.draw.rect(self.screen, (0, 0, 0), (x, y, self.screen_grid_size, self.screen_grid_size), width)
+
         # 渲染 Plane
         for i in range(self.n_agents):
             if self.alives[i]:
@@ -948,12 +980,22 @@ class ScoutEnv(BaseEnv):
         # 计算存活的智能体数量
         red_alive = sum(self.red_alives)
         blue_alive = sum(self.blue_alives)
+        scout_core_ratio = self.scouted_core_total / self.core_grids_num
+        scout_comm_ratio = self.scouted_comm_total / self.core_grids_num
 
         # 渲染 text
         red_text = self.font.render(f'Red Alive: {red_alive}', True, (255, 0, 0))
         blue_text = self.font.render(f'Blue Alive: {blue_alive}', True, (0, 0, 255))
+        scout_text = self.font.render(f'Scout Core: {scout_core_ratio} Scout Comm: {scout_comm_ratio}', True, (255, 0, 0))
         self.screen.blit(red_text, (10, 10))
         self.screen.blit(blue_text, (10, 50))
+        self.screen.blit(scout_text, (10, 90))
+
+        # 渲染自爆效果
+        self.render_explode()
+
+        # 渲染碰撞效果
+        self.render_collide()
 
         pygame.display.flip()
 
@@ -978,7 +1020,7 @@ if __name__ == "__main__":
     env.reset()
     
     import time
-    for i in range(200):
+    for i in range(100):
         start = time.time()
         actions = env.scripted_policy_red()
         env.step(actions)
