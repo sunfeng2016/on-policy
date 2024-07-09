@@ -361,35 +361,6 @@ class BaseEnv(MultiAgentEnv):
         self.blue_alives[blue_explode_mask] = False
         self.blue_explode_mask = blue_explode_mask
 
-    def red_explode_old(self, explode_mask):
-        # 更新 explode_mask， 排除已经死掉的智能体
-        valid_explode_mask = explode_mask & self.red_alives
-
-        # 记录红方自爆的智能体，用作渲染
-        self.red_self_destruction_mask = valid_explode_mask
-
-        # 计算每个红方智能体与每个蓝方智能体之间的距离
-        distances_red2blue = distance.cdist(self.red_positions, self.blue_positions, 'euclidean')
-        
-        # 红方智能体自爆范围内的蓝方智能体
-        blue_in_explode_zone = distances_red2blue < self.explode_radius
-
-        # 统计无效自爆的智能体数量
-        valid_blue_mask = blue_in_explode_zone & self.blue_alives
-        self.invalid_explode_red_num = np.sum(np.sum(valid_blue_mask[valid_explode_mask], axis=1) == 0)
-        self.invalid_explode_red_total += self.invalid_explode_red_num
-
-        # 触发自爆的红方智能体将被标记为死亡
-        self.red_alives[valid_explode_mask] = False
-        self.explode_flag[valid_explode_mask] = (np.sum(valid_blue_mask[valid_explode_mask], axis=1) != 0)
-        self.invalid_explode_flag[valid_explode_mask] = (np.sum(valid_blue_mask[valid_explode_mask], axis=1) == 0)
-
-        # 将自爆范围内的蓝方智能体标记为死亡，并统计有效毁伤的蓝方智能体数量
-        self.blue_explode_mask = np.any(blue_in_explode_zone[valid_explode_mask], axis=0)
-        self.explode_blue_num = np.sum(self.blue_explode_mask & self.blue_alives)
-        self.explode_blue_total += self.explode_blue_num
-        self.blue_alives[self.blue_explode_mask] = False
-
     def red_collide(self, collide_mask, pt):
         """
         红方智能体与其目标的碰撞
@@ -426,83 +397,6 @@ class BaseEnv(MultiAgentEnv):
         self.blue_alives[success_target_ids] = False
 
         # 更新碰撞标记
-        self.collide_flag = np.zeros(self.n_reds, dtype=bool)
-        self.collide_flag[success_agent_ids] = True
-
-        # 更新红方智能体的方向
-        self.red_directions[valid_collide_mask] = self.angles_red2blue[valid_collide_mask, target_ids]
-        pt[valid_collide_mask] = 0
-
-        return pt
-
-    def red_collide_old(self, collide_mask, pt):
-        """
-        红方智能体与其目标的碰撞
-        """
-        # # 计算红方智能体到蓝方智能体的方向向量
-        # delta_red2blue = self.blue_positions[np.newaxis, :, :] - self.red_positions[:, np.newaxis, :]   # nred x nblue x 2
-
-        # # 计算红方智能体到蓝方智能体的角度
-        # angles_red2blue = np.arctan2(delta_red2blue[:, :, 1], delta_red2blue[:, :, 0])                  # nred x nblue
-
-        # # 计算红方智能体当前方向与到蓝方智能体的方向的角度差
-        # angles_diff_red2blue = angles_red2blue - self.red_directions[:, np.newaxis]                     # nred x nblue
-        # angles_diff_red2blue = (angles_diff_red2blue + np.pi) % (2 * np.pi) - np.pi
-
-        # # 计算红方智能体到蓝方智能体的距离
-        # distances_red2blue = distance.cdist(self.red_positions, self.blue_positions, 'euclidean')
-
-        # # 创建有效性掩码，只考虑存活的红方和蓝方智能体之间的距离
-        # valid_mask = self.red_alives[:, np.newaxis] & self.blue_alives[np.newaxis, :]
-
-        # # 将无效的距离设置为无限大
-        # distances_red2blue = np.where(valid_mask, distances_red2blue, np.inf)
-
-        # # 红方智能体攻击范围内的蓝方智能体
-        # blue_in_attack_zone = (distances_red2blue < self.attack_radius) & (
-        #     np.abs(angles_diff_red2blue) < self.attack_angle / 2
-        # )
-
-        # # 将不在攻击范围内的距离设置为无限大
-        # distances_red2blue[~blue_in_attack_zone] = np.inf
-
-        # # 找到每个红方智能体最近的蓝方智能体
-        # nearest_blue_id = np.argmin(distances_red2blue, axis=1)
-
-        # # 如果红方智能体没有攻击范围内的蓝方智能体，目标设为-1
-        # nearest_blue_id[np.all(np.isinf(distances_red2blue), axis=1)] = -1
-
-        # 更新红方智能体的目标
-        red_targets = self.red_targets
-
-        # 更新 collide_mask，排除没有 target 的智能体
-        valid_collide_mask = collide_mask & (red_targets != -1) & self.red_alives
-
-        # 获取有效的 target_id
-        target_ids = red_targets[valid_collide_mask]
-        agent_ids = np.where(valid_collide_mask)[0]
-
-        # 获取红方智能体和其目标之间的距离
-        valid_distances = self.distances_red2blue[valid_collide_mask, target_ids]
-
-        # 判断撞击成功的情况
-        collide_success_mask = valid_distances < (self.collide_distance + self.red_velocities[valid_collide_mask] * self.dt_time)
-
-        # 获取撞击成功的 agent_id 和 target_id
-        success_agent_ids = agent_ids[collide_success_mask]
-        success_target_ids = target_ids[collide_success_mask]
-
-        self.collide_blue_num = success_agent_ids.size
-        self.collide_blue_total += self.collide_blue_num
-
-        # 记录红方撞击成功的智能体，用作渲染
-        self.red_collide_agent_ids = success_agent_ids
-        self.red_collide_target_ids = success_target_ids
-
-        # 更新红方智能体和目标蓝方智能体的存活状态
-        self.red_alives[success_agent_ids] = False
-        self.blue_alives[success_target_ids] = False
-
         self.collide_flag = np.zeros(self.n_reds, dtype=bool)
         self.collide_flag[success_agent_ids] = True
 
