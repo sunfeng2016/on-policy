@@ -535,89 +535,6 @@ class DefenseEnv(BaseEnv):
         agent_directions += np.random.uniform(-np.pi/18, np.pi/18, self.n_blues)
             
         return agent_positions, agent_directions
-
-    def get_reward_old(self, win):
-        reward = self.reward_time
-
-        num = np.array([self.explode_red_num, self.explode_blue_num, self.invalid_explode_num, self.collide_success_num, self.attack_core_num, self.red_out_of_bounds_num])
-        value = np.array([self.reward_explode_red, self.reward_explode_blue, self.reward_explode_invalid, self.reward_collied, self.reward_attack_core, self.reward_out_of_bound])
-
-        reward += np.sum(num * value)
-
-        win_reward = self.reward_win if win else self.reward_defeat
-
-        reward += win_reward
-
-        return reward
-    
-    def get_reward_0705(self, win=False):
-
-        # 动态时间惩罚
-        time_penalty = self.reward_time * (1 + self._episode_steps / self.episode_limit)
-
-        # 红方智能体被炸掉惩罚
-        red_destroyed_penalty = self.reward_explode_red * self.explode_red_num * (
-            1 + self.explode_red_total / self.n_reds)
-        
-        # 核心区域被打击惩罚
-        core_hit_penalty = self.reward_attack_core * self.attack_core_num * (
-            1 + self.attack_core_total / self.max_attack_core_num)
-        
-        # 每个时间步杀伤蓝方数量奖励
-        kill_num = self.collide_blue_num + self.explode_blue_num
-        self.kill_total += kill_num
-        kill_reward = (self.reward_kill_blue * (1 + self.kill_total // 20)) * kill_num * (1 + self.kill_total / self.n_blues)
-
-        # 获胜奖励
-        win_reward = self.reward_win if win else self.reward_defeat
-
-        total_reward = (win_reward + time_penalty + red_destroyed_penalty + core_hit_penalty + kill_reward)
-        
-        return total_reward
-
-    def get_dist_reward_old(self):
-        """
-        计算智能体在目标区域内的奖励和惩罚，并根据地图大小适当缩放距离惩罚。
-        
-        参数:
-        positions (numpy.ndarray): 形状为 (n, 2) 的数组，包含每个智能体的位置。
-        target_area (tuple): 目标区域的边界 (x_min, x_max, y_min, y_max)。
-        map_width (float): 地图的宽度。
-        map_height (float): 地图的高度。
-        
-        返回:
-        numpy.ndarray: 包含每个智能体的奖励的数组。
-        """
-
-        # 获取红方目标矩形区域的边界
-        x_min, x_max, y_min, y_max = self.red_target_area
-
-        # 初始化奖励数组
-        rewards = np.zeros(self.n_reds)
-
-        # 判断智能体是否在目标区域内
-        in_area = (x_min <= self.red_positions[:, 0]) & (self.red_positions[:, 0] <= x_max) & \
-              (y_min <= self.red_positions[:, 1]) & (self.red_positions[:, 1] <= y_max)
-
-        # 进入区域的智能体奖励
-        rewards[in_area] += self.reward_near_core
-
-        # 计算离区域边界最短的距离
-        dx = np.maximum(x_min - self.red_positions[:, 0], 0, self.red_positions[:, 0] - x_max)
-        dy = np.maximum(y_min - self.red_positions[:, 1], 0, self.red_positions[:, 1] - y_max)
-        distance_penalty = dx + dy
-            
-
-        # 地图对角线距离
-        map_diagonal = np.sqrt(self.size_x**2 + self.size_y**2)
-
-        # 缩放距离惩罚
-        scaled_distance_penalty = distance_penalty / map_diagonal
-
-        # 给不在区域内的智能体分配距离惩罚
-        rewards[~in_area] -= scaled_distance_penalty[~in_area]
-
-        return rewards
     
     def get_dist_reward(self):
         # 获取红方目标矩形区域的边界
@@ -649,31 +566,6 @@ class DefenseEnv(BaseEnv):
 
         return rewards
 
-    
-    def get_dist_reward(self):
-        # 获取红方目标矩形区域的边界
-        x_min, x_max, y_min, y_max = self.red_target_area
-
-        # 初始化奖励数组
-        rewards = np.zeros(self.n_reds)
-
-        # 判断智能体是否在目标区域内
-        in_area = (x_min <= self.red_positions[:, 0]) & (self.red_positions[:, 0] <= x_max) & \
-              (y_min <= self.red_positions[:, 1]) & (self.red_positions[:, 1] <= y_max)
-        
-        out_area = ~in_area & self.red_alives 
-
-        # 计算离区域边界最短的距离
-        dx = np.maximum(x_min - self.red_positions[:, 0], 0, self.red_positions[:, 0] - x_max)
-        dy = np.maximum(y_min - self.red_positions[:, 1], 0, self.red_positions[:, 1] - y_max)
-        distance2area = dx + dy
-
-        if self.dist2area is not None:
-            rewards[out_area] = np.where(distance2area < self.dist2area, self.reward_near_area, self.reward_away_area)[out_area]
-            self.dist2area = distance2area.copy()
-
-        return rewards
-
     def get_reward(self, win=False):
 
         # 动态时间惩罚
@@ -695,9 +587,6 @@ class DefenseEnv(BaseEnv):
         self.kill_total += kill_num
         kill_reward = (self.reward_kill_blue * (1 + self.kill_total // 10)) * kill_num * (1 + self.kill_total / self.n_blues)
 
-        # 获胜奖励
-        # win_reward = 0
-
         total_reward = (time_penalty + dist_reward + red_destroyed_penalty + core_hit_penalty + kill_reward)
         
         return total_reward
@@ -712,33 +601,6 @@ class DefenseEnv(BaseEnv):
         terminated = False
         win = False
         info = ""
-
-        # 检查终止条件
-        # if self._episode_steps >= self.episode_limit:
-        #     terminated = True
-        #     # win = self.total_hit_core_num < self.max_attack_core_num or n_blue_alive == 0
-        #     # 至对抗结束，基地未被摧毁
-        #     win = self.total_hit_core_num < self.max_attack_core_num
-        #     if win:
-        #         info = "Time limit reached. Red based were not destroyed."
-        #     else:
-        #         info = "Time limit reached. Red based were destroyed."
-        # # elif n_red_alive == 0:
-        # #     terminated = True
-        # #     win = False
-        # #     info = "All red units destroyed. Blue wins."
-        # elif n_blue_alive == 0:
-        #     terminated = True
-        #     win = True
-        #     info = "All blue units destroyed. Red wins."
-        # elif self.total_hit_core_num >= self.max_attack_core_num:
-        #     terminated = True
-        #     win = False
-        #     info = "Red base detroyed. Blue wins."
-        # # # elif n_blue_alive + self.total_hit_core_num < self.max_attack_core_num:
-        # #     terminated = True
-        # #     win = True
-        # #     info = "Remaining blue units insufficient to destroy red base. Red wins."
             
         if self.attack_core_total >= self.max_attack_core_num:
             terminated = True

@@ -126,30 +126,14 @@ class ScoutEnv(BaseEnv):
         state_size = [base_state_size[0] + self.num_grids, [base_state_size[0]], [1, self.num_grids_y, self.num_grids_x]]
         self.share_observation_space = [state_size] * self.n_reds
 
-        # base_state_size[0] += self.num_grids
-        # base_state_size.append([self.num_grids_y, self.num_grids_x])
-        # self.share_observation_space = [base_state_size] * self.n_reds
-
         # Reward
-        # self.reward_time = 0.1
-        # self.reward_explode_red = -10
-        # self.reward_explode_blue = 5
-        # self.reward_explode_invalid = -20
-        # self.reward_collied_red = -10
-        # self.reward_collied_blue = 5
-        # self.reward_out_of_bound = -10
-        # self.reward_out_of_scout = -1
-        # self.reward_in_threat = -10
-        # self.reward_scout_core = 20
-        # self.reward_scout_comm = 5
-
         self.time_reward = 0.1
         self.scout_core_reward = 2
         self.scout_comm_reward = 1
         self.kill_reward = 0.5
         self.be_killed_penalty = -1
         self.out_scout_penalty = -0.05
-        self.in_threat_penalty = -0.05
+        self.in_threat_penalty = -0.05 # TODO 太小了，改成0.5
 
         self.reward_win = 1000
         self.reward_defeat = 0
@@ -556,6 +540,8 @@ class ScoutEnv(BaseEnv):
 
         pt = self.blue_guard(pt)
 
+        # TODO 处理蓝方的出界
+
         self.blue_directions += pt * self.max_angular_vel
         self.blue_directions = (self.blue_directions + np.pi) % (2 * np.pi) - np.pi
         self.blue_positions += np.column_stack((self.blue_velocities * np.cos(self.blue_directions), 
@@ -627,51 +613,6 @@ class ScoutEnv(BaseEnv):
         rewards = np.expand_dims(rewards, axis=1)
 
         return rewards.tolist()
-
-    def get_reward_old(self, win=False):
-        
-        # 动态时间奖励
-        time_penalty = self.reward_time * (1 + self._episode_steps / self.episode_limit)
-
-        # 动态高价值区域侦察奖励 (侦察的越多，给的奖励越多)
-        scout_core_reward = self.reward_scout_core * self.scouted_core_num * (1 + self.scouted_core_total / self.core_grids_num)
-
-        # 动态低价值区域侦察奖励 (侦察的越多，给的奖励越多)
-        scout_comme_reward = self.reward_scout_comm * self.scouted_comm_num * (1 + self.scouted_comm_total / self.comm_grids_num)
-
-        # 自爆毁伤蓝方智能体奖励 (给固定的奖励)
-        destroyed_reward = self.reward_explode_blue * self.explode_blue_num
-
-        # 撞击毁伤蓝方智能体奖励 (给固定的奖励)
-        collide_reward = self.reward_explode_blue * self.collide_blue_num
-
-        # 动态出界惩罚 (出界越多，给的惩罚越多)
-        out_of_bounds_penalty = self.reward_out_of_bound * self.outofbound_red_num * (1 + self.outofbound_red_total / self.n_reds)
-
-        # 动态在侦察区域外惩罚
-        out_of_scout_area_penalty = self.reward_out_of_scout * self.outofscout_num * (1 + self._episode_steps / self.episode_limit)
-
-        # 被自爆炸死惩罚
-        destroyed_penalty = self.reward_explode_red * self.explode_red_num
-
-        # 被撞死惩罚
-        collide_penalty = self.reward_collied_red * self.collide_red_num
-
-        # 无效自爆惩罚
-        invalid_explode_penalty = self.reward_explode_invalid * self.invalid_explode_red_num
-
-        # 威胁区惩罚
-        in_threat_penalty = self.reward_in_threat * self.in_threat_red_num
-
-        # 获胜奖励
-        win_reward = self.reward_win if win else self.reward_defeat
-
-        total_reward = (win_reward + time_penalty + scout_core_reward + scout_comme_reward + 
-                        destroyed_reward + collide_reward + out_of_bounds_penalty + out_of_bounds_penalty +
-                        out_of_scout_area_penalty + destroyed_penalty + collide_penalty + invalid_explode_penalty +
-                        in_threat_penalty)
-
-        return total_reward
     
     def update_scout(self):
         # 将中心点为 (0, 0) 的坐标转换为左下角为原点的坐标
@@ -733,82 +674,6 @@ class ScoutEnv(BaseEnv):
         # self.scout_out_grids = np.zeros(self.n_reds, dtype=bool)
         # self.scout_out_grids[new_scouted] = self.out_grids[grid_indices_y[new_scouted], grid_indices_x[new_scouted]]
         self.scout_out_grids = self.out_grids[grid_indices_y, grid_indices_x] & self.red_alives
-
-    def update_scout_old(self):
-        """
-        更新侦察区域的扫描情况
-        """
-        self.scouted_core_num = 0
-        self.scouted_comm_num = 0
-
-        # 获取存活的红方智能体位置
-        alive_reds = self.red_positions[self.red_alives] #(n1, 2)
-
-        # 判断智能体是否在矩形侦察区域内
-        in_scout_area = (np.abs(alive_reds[:, 0]) <= self.scout_width / 2) & (np.abs(alive_reds[:, 1]) <= self.scout_height / 2) # (n1)
-        valid_positions = alive_reds[in_scout_area] # (n2, 2)
-
-        self.outofscout_num = np.sum(~in_scout_area)
-        self.outofscout_total += self.outofscout_num
-
-        if len(valid_positions) == 0:
-            return
-
-        # 将中心点为 (0,0) 的坐标转换为左下角为原点的坐标系
-        shifted_positions = (valid_positions + np.array([self.scout_width / 2, self.scout_height / 2])) # (n2, 2)
-
-        # 计算智能体所在的格子索引
-        grid_indices_x = (shifted_positions[:, 0] // self.grid_size).astype(int) # (n2,)
-        grid_indices_y = (shifted_positions[:, 1] // self.grid_size).astype(int) # (n2,)
-
-        # 获取格子的中心
-        grid_centers = self.grid_centers[grid_indices_y, grid_indices_x]    # (n2,2)
-
-        # 计算智能体位置与格子中心的距离
-        distances = np.linalg.norm(valid_positions - grid_centers, axis=1)  # (n2,)
-
-        # 判断距离小于10的格子
-        scouted = distances < self.scout_dist
-
-        if not np.any(scouted):
-            return
-
-        # 获取已经被侦察过的格子
-        already_scouted = self.scouted_grids[grid_indices_y, grid_indices_x]
-
-        # 获取在威胁区的格子
-        in_threat_area = self.threat_grids[grid_indices_y, grid_indices_x]
-
-        # 获取在核心区的格子
-        in_core_area = self.core_grids[grid_indices_y, grid_indices_x]
-
-        # 筛选出新的侦察到的格子
-        new_scouted = scouted & ~already_scouted & ~in_threat_area
-
-        if not any(new_scouted):
-            return
-
-        # 筛选出侦察到的核心区格子
-        scouted_core = new_scouted & in_core_area
-
-        # 去重：获取被侦察到的格子的唯一索引
-        unique_scouted_indices = np.unique(np.stack((grid_indices_y[new_scouted],
-                                                     grid_indices_x[new_scouted]),
-                                                     axis=1), axis=0)
-        unique_scouted_core_indices = np.unique(np.stack((grid_indices_y[scouted_core], 
-                                                          grid_indices_x[scouted_core]),
-                                                          axis=1), axis=0)
-
-        # 计算侦察核心区的格子数目
-        self.scouted_core_num = len(unique_scouted_core_indices)
-        self.scouted_core_total += self.scouted_core_num
-
-        # 计算侦察普通区的格子数目
-        self.scouted_comm_num = len(unique_scouted_indices) - self.scouted_core_num
-        self.scouted_comm_total += self.scouted_comm_num
-
-        # 更新被侦察的格子
-        self.scouted_grids[unique_scouted_indices[:, 0], unique_scouted_indices[:, 1]] = True
 
 
     def init_in_rect(self, x_range, y_range, angle, num):
@@ -981,15 +846,17 @@ class ScoutEnv(BaseEnv):
         red_alive = sum(self.red_alives)
         blue_alive = sum(self.blue_alives)
         scout_core_ratio = self.scouted_core_total / self.core_grids_num
-        scout_comm_ratio = self.scouted_comm_total / self.core_grids_num
+        scout_comm_ratio = self.scouted_comm_total / self.comm_grids_num
 
         # 渲染 text
+        time_text = self.font.render(f'Episode: {self._episode_count} Time Step: {self._episode_steps} Win count: {self.battles_won}', True, (0, 0, 0))
         red_text = self.font.render(f'Red Alive: {red_alive}', True, (255, 0, 0))
         blue_text = self.font.render(f'Blue Alive: {blue_alive}', True, (0, 0, 255))
-        scout_text = self.font.render(f'Scout Core: {scout_core_ratio} Scout Comm: {scout_comm_ratio}', True, (255, 0, 0))
+        scout_text = self.font.render(f'Scout Core: {round(scout_core_ratio, 2)} Scout Comm: {round(scout_comm_ratio, 2)}', True, (255, 0, 0))
         self.screen.blit(red_text, (10, 10))
         self.screen.blit(blue_text, (10, 50))
         self.screen.blit(scout_text, (10, 90))
+        self.screen.blit(time_text, (10, 130))
 
         # 渲染自爆效果
         self.render_explode()
