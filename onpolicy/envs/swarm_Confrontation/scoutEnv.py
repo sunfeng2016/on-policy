@@ -13,6 +13,7 @@ try:
 except:
     from baseEnv import BaseEnv
 
+from onpolicy.envs.swarm_Confrontation.utils import append_to_csv
 from scipy.spatial import distance
 
 image_dir = "/home/ubuntu/sunfeng/MARL/on-policy/onpolicy/envs/swarm_Confrontation/"
@@ -30,15 +31,21 @@ class ScoutEnv(BaseEnv):
         self.scout_pos = np.array([-self.scout_width / 2, self.scout_height / 2])
 
         # 蓝方候选高价值区域 (从左到右，从上到下的顺序)
+        # self.candidate_core = [
+        #     {'center': np.array([-2250.0,  1250.0]), 'radius': 250.0},
+        #     {'center': np.array([-2250.0, -1250.0]), 'radius': 250.0}, 
+        #     {'center': np.array([-1700.0,   700.0]), 'radius': 300.0}, 
+        #     {'center': np.array([-1750.0, -1050.0]), 'radius': 250.0}, 
+        #     {'center': np.array([ -700.0,  -100.0]), 'radius': 300.0}, 
+        #     {'center': np.array([  300.0,  -800.0]), 'radius': 300.0}, 
+        #     {'center': np.array([ 2450.0,  1650.0]), 'radius': 250.0}, 
+        #     {'center': np.array([ 2250.0, -1250.0]), 'radius': 250.0}, 
+        # ]
         self.candidate_core = [
-            {'center': np.array([-2250.0,  1250.0]), 'radius': 250.0},
-            {'center': np.array([-2250.0, -1250.0]), 'radius': 250.0}, 
             {'center': np.array([-1700.0,   700.0]), 'radius': 300.0}, 
             {'center': np.array([-1750.0, -1050.0]), 'radius': 250.0}, 
             {'center': np.array([ -700.0,  -100.0]), 'radius': 300.0}, 
             {'center': np.array([  300.0,  -800.0]), 'radius': 300.0}, 
-            {'center': np.array([ 2450.0,  1650.0]), 'radius': 250.0}, 
-            {'center': np.array([ 2250.0, -1250.0]), 'radius': 250.0}, 
         ]
         # 从8个可能的高价值区域中随机选择4个作为高价值区域
         self.core_ranges_num = 4
@@ -52,7 +59,7 @@ class ScoutEnv(BaseEnv):
         ]
 
         # 红方分布的区域
-        self.red_group_num = 2
+        self.red_group_num = 4
 
         self.red_init_range = [
             {
@@ -128,12 +135,15 @@ class ScoutEnv(BaseEnv):
 
         # Reward
         self.time_reward = 0.1
-        self.scout_core_reward = 2
+        self.scout_core_reward = 10
         self.scout_comm_reward = 1
         self.kill_reward = 0.5
         self.be_killed_penalty = -1
         self.out_scout_penalty = -0.05
-        self.in_threat_penalty = -0.05 # TODO 太小了，改成0.5
+        self.in_threat_penalty = -0.5 # 增加红方进入威胁区域的惩罚
+        self.repeated_scouted_penalty = -0.1 # 重复侦查惩罚
+        self.reward_near_area = 0.1         # 靠近目标区域的奖励
+        self.reward_away_area = -0.1
 
         self.reward_win = 1000
         self.reward_defeat = 0
@@ -141,6 +151,20 @@ class ScoutEnv(BaseEnv):
         # 在威胁区的最大时间
         self.max_in_threat_time = 5
 
+        # 侦查边界
+        self.half_scout_size_x = self.scout_width/2
+        self.half_scout_size_y = self.scout_height/2
+        self.scout_bounds = np.array([
+            [[ 1,  1], [-1,  1]],   # 上边界
+            [[-1,  1], [-1, -1]],   # 左边界
+            [[-1, -1], [ 1, -1]],   # 下边界
+            [[ 1, -1], [ 1,  1]]    # 右边界
+        ]) * np.array([self.half_scout_size_x, self.half_scout_size_y])
+
+        # 侦查边界向量、长度以及单位向量
+        self.scout_bounds_vec = self.scout_bounds[:, 1, :] - self.scout_bounds[:, 0, :]
+        self.scout_bounds_len = np.linalg.norm(self.scout_bounds_vec, axis=1)
+        self.scout_bounds_unitvec = self.scout_bounds_vec / self.scout_bounds_len[:, np.newaxis]
 
     def reset(self):
         super().reset()
@@ -193,6 +217,12 @@ class ScoutEnv(BaseEnv):
         # 在侦察区域外的智能体数
         self.outofscout_num = 0             # 每个时间步在侦察区域外的智能体数目
         self.outofscout_total = 0
+
+        # 每步重复侦查的格子的数量
+        self.repeated_scouted = None
+
+        # 红方智能体与目标区域的距离 
+        self.dist2area = None               
 
         # 在威胁区的智能体数目
         self.in_threat_red_num = 0
@@ -270,14 +300,21 @@ class ScoutEnv(BaseEnv):
             return distances < radius
 
     def step(self, actions):
+
         # Get red actions
         at = self.acc_actions[actions[:, 0]]
         pt = self.heading_actions[actions[:, 1]]
         attack_t = actions[:, 2]
 
+        # 存储数据
+        self.red_action = np.stack([at, pt * self.max_angular_vel * 180 / np.pi, attack_t], axis=-1)
+
         explode_mask = (attack_t == 1)
         collide_mask = (attack_t == 2)
         soft_kill_mask = (attack_t == 3)
+        
+        # if (self.only_render or self.only_eval) and self._episode_steps <= 10:
+        #     self.red_scripted_policy()
 
         # Perfor attack actions
         self.red_explode(explode_mask)
@@ -361,7 +398,187 @@ class ScoutEnv(BaseEnv):
         
         available_actions = self.get_avail_actions()
         
+        # 避开威胁区域
+        available_actions = self.avoid_threat_zone(available_actions)
+
+        # # 存储数据
+        # self.dump_data()
+
+        # # 输出数据到csv
+        # if terminated:
+        #     append_to_csv(self.agent_data, self.filename)
+
         return local_obs, global_state, rewards, dones, infos, available_actions
+
+    def get_avail_heading_actions(self):
+        # 初始化有效动作数组
+        available_actions = np.ones((self.n_reds, self.heading_action_num), dtype=bool)
+
+        # 判断智能体是否在扫描边界外
+        out_of_bounds_x = (self.red_positions[:, 0] < -(self.scout_width / 2)) | (self.red_positions[:, 0] > (self.scout_width / 2))
+        out_of_bounds_y = (self.red_positions[:, 1] < -(self.scout_height / 2)) | (self.red_positions[:, 1] > (self.scout_height / 2))
+        out_of_bounds = out_of_bounds_x | out_of_bounds_y
+
+        # 找到出界的智能体索引
+        out_of_bounds_indices = np.where(out_of_bounds)[0]
+
+        if out_of_bounds_indices.size == 0:
+            return available_actions
+
+        # 计算智能体当前位置到每个边界起点的向量
+        pos_vec = self.red_positions[out_of_bounds_indices, np.newaxis, :] - self.scout_bounds[:, 0, :]  # (n, 4, 2)
+
+        # 计算点向量的单位向量
+        pos_unitvec = pos_vec / self.scout_bounds_len[:, np.newaxis]
+
+        # 计算每个智能体位置在每条线段上的投影比例
+        t = np.einsum('nij,ij->ni', pos_unitvec, self.scout_bounds_unitvec)   # (n, 4)
+
+        # 将 t 限制在 [0, 1] 范围内，确保投影点在线段上
+        t = np.clip(t, 0.0, 1.0)
+
+        # 计算线段上距离智能体最近的点的坐标 (投影点)
+        nearest = self.scout_bounds[:, 0, :] + t[:, :, np.newaxis] * self.scout_bounds_vec[np.newaxis, :, :]  # (n, 4, 2)
+
+        # 计算智能体当前位置到最近点的距离
+        nearest_dist = np.linalg.norm(self.red_positions[out_of_bounds_indices, np.newaxis, :] - nearest, axis=2) # (n, 4)
+
+        # 找到每个智能体距离最近的线段的索引
+        nearest_id = np.argmin(nearest_dist, axis=1)    # (n)
+
+        # 获取每个智能体最近的目标点
+        nearest_target = nearest[np.arange(out_of_bounds_indices.size), nearest_id] # (n, 2)
+
+        # 计算智能体的期望方向
+        desired_directions = np.arctan2(nearest_target[:, 1] - self.red_positions[out_of_bounds_indices, 1],
+                                        nearest_target[:, 0] - self.red_positions[out_of_bounds_indices, 0])    # (n)
+        
+        # 计算当前方向到期望方向的角度
+        angles_diff = desired_directions - self.red_directions[out_of_bounds_indices] # (n)
+        angles_diff = (angles_diff + np.pi) % (2 * np.pi) - np.pi
+        angles_diff_threshold = self.max_angular_vel
+
+        # # 如果角度差大于angles_diff_threshold, 则只用-1, -2号动作
+        # mask_neg = angles_diff <= -angles_diff_threshold
+        # available_actions[out_of_bounds_indices[mask_neg], :self.heading_action_mid_id+1] = 0
+
+        # # 如果角度差小于-angles_diff_threshold，则只用0, 1号动作
+        # mask_pos = angles_diff >= angles_diff_threshold
+        # available_actions[out_of_bounds_indices[mask_pos], self.heading_action_mid_id:] = 0
+
+        # 如果角度差大于angles_diff_threshold, 则只用-1, -2号动作
+        mask_pos = angles_diff >= angles_diff_threshold
+        available_actions[out_of_bounds_indices[mask_pos], :self.heading_action_mid_id+1] = 0
+
+        # 如果角度差小于-angles_diff_threshold，则只用0, 1号动作
+        mask_neg = angles_diff <= -angles_diff_threshold
+        available_actions[out_of_bounds_indices[mask_neg], self.heading_action_mid_id:] = 0
+
+        return available_actions
+
+    def avoid_threat_zone(self, available_actions):
+        
+        near_threat_radius = 100
+        threat_center = np.array([d['center'] for d in self.threat_ranges])
+        threat_radius = np.array([d['radius'] for d in self.threat_ranges])
+
+        # 计算智能体当前位置到最近的威胁区的中心点的向量
+        threat_vec = self.red_positions[:, np.newaxis, :] - threat_center[np.newaxis, :, :] # (n, 4)
+
+        # 计算智能体当前位置到最近的威胁区的中心点的距离
+        threat_dist = np.linalg.norm(threat_vec, axis=-1, ord=2)
+        
+        # 计算智能体当前位置到最近的威胁区的中心点的索引
+        nearest_id = np.argmin(threat_dist, axis=-1)
+        
+        # 计算智能体当前位置到最近的威胁区的中心点的最短距离
+        nearest_dist = np.amin(threat_dist, axis=-1)
+
+        # 选出需要避开威胁区的智能体
+        nearest_threat_radius = threat_radius[nearest_id]
+        near_threat_agent = (nearest_dist - (near_threat_radius + nearest_threat_radius)) <= 0
+        
+        # 选出需要避开威胁区的智能体的索引
+        near_threat_agent_id = np.where(near_threat_agent)[0]
+
+        # 获取离每个需要避开威胁区的智能体最近的威胁区中心点
+        nearest_threat = threat_center[nearest_id][near_threat_agent] # (n, 2)
+
+        # 计算需要避开威胁区的智能体到威胁区的期望方向
+        desired_directions = np.arctan2(nearest_threat[:, 1] - self.red_positions[near_threat_agent, 1],
+                                        nearest_threat[:, 0] - self.red_positions[near_threat_agent, 0])    # (n)
+        
+        # print(near_threat_agent)
+        
+        # 计算当前方向到期望方向的角度
+        angles_diff = desired_directions - self.red_directions[near_threat_agent]
+        angles_diff = (angles_diff + np.pi) % (2 * np.pi) - np.pi
+        angles_diff_threshold = self.max_angular_vel
+
+        available_actions = np.array(available_actions)
+
+        # 如果角度差大于angles_diff_threshold, 则只用-1, -2号动作
+        mask_neg = angles_diff <= -angles_diff_threshold
+        available_actions[near_threat_agent_id[mask_neg], self.acc_action_num:(self.acc_action_num+self.heading_action_mid_id+1)] = 0
+
+        # 如果角度差小于-angles_diff_threshold，则只用0, 1号动作
+        mask_pos = angles_diff >= angles_diff_threshold
+        available_actions[near_threat_agent_id[mask_pos], (self.acc_action_num+self.heading_action_mid_id):(self.acc_action_num+self.heading_action_num)] = 0
+
+        available_actions = [available_actions[i, :].tolist() for i in range(self.n_reds)]
+
+        return available_actions        
+        
+    def blue_explode(self):
+        """
+        判断蓝方智能体是否需要自爆:
+        规则如下：
+            1. 如果红方存活智能体数量超过70%, 且蓝方智能体自爆范围内超过3个红方智能体, 则蓝方智能体自爆
+            2. 如果红方存活智能体数量在40%到70%之间, 且蓝方智能体的自爆范围内超过2个红方智能体, 则蓝方智能体自爆
+            3. 如果红方存活智能体数量少于40%, 且蓝方智能体的自爆范围内超过1个红方智能体, 则蓝方智能体自爆
+        """
+
+        # 计算存活的红方智能体数量
+        alive_count = np.sum(self.red_alives)
+        alive_percentage = alive_count / self.n_reds
+
+        # 计算每个蓝方智能体与每个红方智能体的距离
+        distances_blue2red = distance.cdist(self.blue_positions, self.red_positions, 'euclidean')
+
+        # 蓝方智能体自爆范围内的红方智能体
+        red_in_explode_zone = (distances_blue2red < self.explode_radius) & self.red_alives
+        red_counts_in_zone = np.sum(red_in_explode_zone, axis=1)
+
+        if alive_percentage >= 0.7:
+            self_destruction_mask = red_counts_in_zone >= 3
+        elif 0.4 <= alive_percentage < 0.7:
+            self_destruction_mask = red_counts_in_zone >= 2
+        else:
+            self_destruction_mask = red_counts_in_zone >= 1
+
+        self_destruction_mask &= self.blue_alives
+
+        # 记录蓝方自爆的智能体，用作渲染
+        self.blue_self_destruction_mask = self_destruction_mask
+        self.blue_self_destruction_num = np.sum(self_destruction_mask)
+        self.blue_self_destruction_total += self.blue_self_destruction_num
+
+        # 存储数据
+        self.blue_action[self_destruction_mask == 1, 2] = 1
+
+        # 将自爆范围内的红方智能体标记为死亡
+        red_explode_mask = np.any(red_in_explode_zone[self_destruction_mask], axis=0)
+
+        self.be_exploded_flag = (red_explode_mask & self.red_alives)
+
+        # 记录自爆范围内的红方智能体，用作渲染
+        self.red_explode_mask = red_explode_mask & self.red_alives
+
+        self.explode_red_num = np.sum(red_explode_mask & self.red_alives)
+        self.explode_red_total += self.explode_red_num
+
+        self.red_alives[red_explode_mask] = False
+        self.blue_alives[self_destruction_mask] = False
 
     def blue_explode(self):
         """
@@ -396,6 +613,9 @@ class ScoutEnv(BaseEnv):
         self.blue_self_destruction_mask = self_destruction_mask
         self.blue_self_destruction_num = np.sum(self_destruction_mask)
         self.blue_self_destruction_total += self.blue_self_destruction_num
+
+        # 存储数据
+        self.blue_action[self_destruction_mask == 1, 2] = 1
 
         # 将自爆范围内的红方智能体标记为死亡
         red_explode_mask = np.any(red_in_explode_zone[self_destruction_mask], axis=0)
@@ -465,6 +685,9 @@ class ScoutEnv(BaseEnv):
         success_agent_ids = agent_ids[collide_success_mask]
         success_target_ids = target_ids[collide_success_mask]
 
+        # 存储数据
+        self.blue_action[success_agent_ids, 2] = 2
+
         # 记录蓝方撞击成功的智能体，用作渲染
         self.blue_collide_agent_ids = success_agent_ids
         self.blue_collide_target_ids = success_target_ids
@@ -531,6 +754,63 @@ class ScoutEnv(BaseEnv):
 
         return pt
 
+    def blue_return(self, pt):
+        
+        # 判断智能体是否出缓冲边界
+        out_of_bounds_x = (self.blue_positions[:, 0] < -self.half_size_x) | (self.blue_positions[:, 0] > self.half_size_x)
+        out_of_bounds_y = (self.blue_positions[:, 1] < -self.half_size_y) | (self.blue_positions[:, 1] > self.half_size_y)
+        out_of_bounds = out_of_bounds_x | out_of_bounds_y
+
+        # 找到出界的智能体索引
+        out_of_bounds_indices = np.where(out_of_bounds)[0]
+
+        if out_of_bounds_indices.size == 0:
+            return pt
+
+        # 计算智能体当前位置到每个边界起点的向量
+        pos_vec = self.blue_positions[out_of_bounds_indices, np.newaxis, :] - self.cache_bounds[:, 0, :]  # (n, 4, 2)
+
+        # 计算点向量的单位向量
+        pos_unitvec = pos_vec / self.bounds_len[:, np.newaxis]
+
+        # 计算每个智能体位置在每条线段上的投影比例
+        t = np.einsum('nij,ij->ni', pos_unitvec, self.bounds_unitvec)   # (n, 4)
+
+        # 将 t 限制在 [0, 1] 范围内，确保投影点在线段上
+        t = np.clip(t, 0.0, 1.0)
+
+        # 计算线段上距离智能体最近的点的坐标 (投影点)
+        nearest = self.cache_bounds[:, 0, :] + t[:, :, np.newaxis] * self.bounds_vec[np.newaxis, :, :]  # (n, 4, 2)
+
+        # 计算智能体当前位置到最近点的距离
+        nearest_dist = np.linalg.norm(self.blue_positions[out_of_bounds_indices, np.newaxis, :] - nearest, axis=2) # (n, 4)
+
+        # 找到每个智能体距离最近的线段的索引
+        nearest_id = np.argmin(nearest_dist, axis=1)    # (n)
+
+        # 获取每个智能体最近的目标点
+        nearest_target = nearest[np.arange(out_of_bounds_indices.size), nearest_id] # (n, 2)
+
+        # 计算智能体的期望方向
+        desired_directions = np.arctan2(nearest_target[:, 1] - self.blue_positions[out_of_bounds_indices, 1],
+                                        nearest_target[:, 0] - self.blue_positions[out_of_bounds_indices, 0])    # (n)
+        
+        # 计算当前方向到期望方向的角度
+        angles_diff = desired_directions - self.blue_directions[out_of_bounds_indices] # (n)
+        
+        # 将角度差规范到 [-pi, pi] 区间内
+        angles_diff = (angles_diff + np.pi) % (2 * np.pi) - np.pi
+
+        # 确保转向角度不超过最大角速度
+        angles_diff = np.clip(angles_diff, -self.max_angular_vel, self.max_angular_vel)
+
+        # 更新所有out of bounds的当前方向
+        self.blue_directions[out_of_bounds_indices] += angles_diff
+
+        pt[out_of_bounds] = 0
+
+        return pt
+
     def blue_step(self):
         self.blue_explode()
 
@@ -540,12 +820,16 @@ class ScoutEnv(BaseEnv):
 
         pt = self.blue_guard(pt)
 
-        # TODO 处理蓝方的出界
+        # 蓝方出界返回
+        pt = self.blue_return(pt)
 
         self.blue_directions += pt * self.max_angular_vel
         self.blue_directions = (self.blue_directions + np.pi) % (2 * np.pi) - np.pi
         self.blue_positions += np.column_stack((self.blue_velocities * np.cos(self.blue_directions), 
                                                 self.blue_velocities * np.sin(self.blue_directions))) * self.dt_time
+
+        # 存储数据
+        self.blue_action[:, 1] = pt * self.max_angular_vel
 
     def get_result(self):
         n_red_alive = np.sum(self.red_alives)
@@ -571,6 +855,36 @@ class ScoutEnv(BaseEnv):
             info = '[Defeat] Time out.'
         
         return terminated, win, info
+    
+    def get_dist_reward(self):
+        # 获取红方目标矩形区域的边界
+        x_min, x_max, y_min, y_max = -self.scout_width/2, self.scout_width/2, -self.scout_height/2, self.scout_height/2
+
+        # 初始化奖励数组
+        rewards = np.zeros(self.n_reds)
+
+        # 获取红方智能体的当前位置
+        red_x, red_y = self.red_positions[:, 0], self.red_positions[:, 1]
+
+        # 判断智能体是否在目标区域内
+        in_area = (x_min <= red_x) & (red_x <= x_max) & (y_min <= red_y) & (y_min <= y_max)
+        
+        # 筛选出不在目标区域但仍然存活的智能体
+        out_area = ~in_area & self.red_alives 
+
+        # 计算离区域边界最短的距离
+        dx = np.maximum(x_min - red_x, 0, red_x - x_max)
+        dy = np.maximum(y_min - red_y, 0, red_y - y_max)
+        distance2area = dx + dy
+
+        # 计算奖励
+        if self.dist2area is not None:
+            rewards[out_area] = np.where(distance2area[out_area] < self.dist2area[out_area], 
+                                        self.reward_near_area, self.reward_away_area)
+            self.dist2area[out_area] = distance2area[out_area]
+            self.dist2area[~out_area] = 0
+
+        return rewards
     
     def get_reward(self, win=False):
         # 初始化每个智能体的奖励
@@ -604,11 +918,17 @@ class ScoutEnv(BaseEnv):
         kill_red_agents = self.be_exploded_flag | self.be_collided_flag | self.dead_in_threat
         rewards += self.be_killed_penalty * kill_red_agents * dead_red_ratio
 
-        # 在扫描区外的惩罚，时间越久，惩罚系数越大
-        rewards += self.out_scout_penalty * self.scout_out_grids * episode_progress
+        # # 在扫描区外的惩罚，时间越久，惩罚系数越大
+        # rewards += self.out_scout_penalty * self.scout_out_grids * episode_progress
 
         # 在威胁区的惩罚，时间越久，惩罚系数越大
         rewards += self.in_threat_penalty * self.scout_threat_grids * in_threat_progress
+
+        # 重复侦查区域惩罚
+        rewards += self.repeated_scouted_penalty * self.repeated_scouted
+
+        # 在扫描区外的智能体，靠近侦查区域给奖励，远离给惩罚
+        rewards += self.get_dist_reward()
 
         rewards = np.expand_dims(rewards, axis=1)
 
@@ -622,28 +942,37 @@ class ScoutEnv(BaseEnv):
         grid_indices_x = (shifted_positions[:, 0] // self.grid_size).astype(int)    # (100, )
         grid_indices_y = (shifted_positions[:, 1] // self.grid_size).astype(int)    # (100, )
 
-        out_of_bound = (grid_indices_x >= self.num_grids_x) | (grid_indices_y >= self.num_grids_y)
+        out_of_bound = (grid_indices_x >= self.num_grids_x) | (grid_indices_y >= self.num_grids_y) | (grid_indices_x < 0) | (grid_indices_y < 0)
 
         grid_indices_x[out_of_bound] = 0
         grid_indices_y[out_of_bound] = 0
 
-        # 获取格子的中心
-        grid_centers = self.grid_centers[grid_indices_y, grid_indices_x]            # (100, 2)
+        # 扫描格子的判定
+        scouted = np.ones(self.n_reds, dtype=bool)  # (100, )
 
-        # 计算智能体位置与格子中心的距离
-        distances = np.linalg.norm(self.red_positions - grid_centers, axis=1)       # (100, )
+        # # 获取格子的中心
+        # grid_centers = self.grid_centers[grid_indices_y, grid_indices_x]            # (100, 2)
 
-        # 判断距离小于条件的格子
-        scouted = distances <= self.scout_dist # (100, )
+        # # 计算智能体位置与格子中心的距离
+        # distances = np.linalg.norm(self.red_positions - grid_centers, axis=1)       # (100, )
+
+        # # 判断距离小于条件的格子
+        # scouted = distances <= self.scout_dist # (100, )
         
         # 排除出界的智能体
         scouted &= ~out_of_bound
 
         # 获取已经被侦察过的格子
-        already_scouted = self.scouted_grids[grid_indices_y, grid_indices_x] # (100, )
-
+        try:
+            already_scouted = self.scouted_grids[grid_indices_y, grid_indices_x] # (100, )
+        except:
+            print('error')
+        
         # 筛选出新的被侦察过的格子
         new_scouted = scouted & ~already_scouted & self.red_alives # (100, )
+
+        # 记录重复侦查格子的智能体
+        self.repeated_scouted = scouted & already_scouted # (100,)
 
         # 更新格子的扫描情况
         self.scouted_grids[grid_indices_y[new_scouted], grid_indices_x[new_scouted]] = True
@@ -887,7 +1216,7 @@ if __name__ == "__main__":
     env.reset()
     
     import time
-    for i in range(100):
+    for i in range(50):
         start = time.time()
         actions = env.scripted_policy_red()
         env.step(actions)
@@ -895,21 +1224,4 @@ if __name__ == "__main__":
         print(f'[frame: {i}]---[Time: {time.time() - start}]')
 
     # indices, distances = env.find_nearest_grid()
-
-
-    
-
-
-    
-
-
-        
-
-
-
-
-
-        
-
-
 

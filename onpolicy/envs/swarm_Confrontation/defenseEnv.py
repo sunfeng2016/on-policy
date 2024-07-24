@@ -12,6 +12,7 @@ try:
 except:
     from baseEnv import BaseEnv
     
+from onpolicy.envs.swarm_Confrontation.utils import append_to_csv
 from scipy.spatial import distance
 
 image_dir = "/home/ubuntu/sunfeng/MARL/on-policy/onpolicy/envs/swarm_Confrontation/"
@@ -128,6 +129,9 @@ class DefenseEnv(BaseEnv):
         pt = self.heading_actions[actions[:, 1]]
         attack_t = actions[:, 2]
 
+        # 存储数据
+        self.red_action = np.stack([at, pt * self.max_angular_vel * 180 / np.pi, attack_t], axis=-1)
+
         explode_mask = (attack_t == 1)
         collide_mask = (attack_t == 2)
         soft_kill_mask = (attack_t == 3)
@@ -204,6 +208,13 @@ class DefenseEnv(BaseEnv):
         infos = [info] * self.n_reds
         
         available_actions = self.get_avail_actions()
+
+        # 存储数据
+        self.dump_data()
+
+        # 输出数据到csv
+        if terminated:
+            append_to_csv(self.agent_data, self.filename)
 
         return local_obs, global_state, rewards, dones, infos, available_actions
 
@@ -399,6 +410,9 @@ class DefenseEnv(BaseEnv):
         self.blue_self_destruction_num = np.sum(self_destruction_mask)
         self.blue_self_destruction_total += self.blue_self_destruction_num
 
+        # 存储数据
+        self.blue_action[self_destruction_mask, 2] = 2
+
         # 触发自爆的蓝方智能体将被标记为死亡
         self.blue_alives[self_destruction_mask] = False
 
@@ -465,6 +479,9 @@ class DefenseEnv(BaseEnv):
         # 更新智能体位置，受激活mask限制
         self.blue_positions[mask] += (np.column_stack((self.blue_velocities * np.cos(self.blue_directions),
                                                        self.blue_velocities * np.sin(self.blue_directions))) * self.dt_time)[mask]
+
+        # 存储数据
+        self.blue_action[mask, 1] = angles_diff[mask]
 
         # 判断蓝方智能体是否进入核心区域
         self.is_hit_core_zone()

@@ -22,6 +22,14 @@ map_param_registry = {
         "size_y": 5000,
         "defender": 'red',
     },
+    "10_vs_10": {
+        "n_reds": 10,
+        "n_blues": 10,
+        "episode_limit": 400,
+        "size_x": 8000,
+        "size_y": 5000,
+        "defender": 'red',
+    },
 }
 
 

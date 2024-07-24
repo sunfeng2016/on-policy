@@ -77,8 +77,9 @@ def parse_args(args, parser):
                         help="Which smac map to run on")
     parser.add_argument('--scenario_name', type=str,
                         default='defense', help="Which scenario to run on")
-    parser.add_argument('--only_eval', type=bool, default=False)
-    parser.add_argument('--use_mix_critic', type=bool, default=False)
+    parser.add_argument('--only_eval', action='store_true', default=False)
+    parser.add_argument('--only_render', action='store_true', default=False)
+    parser.add_argument('--use_mix_critic', action='store_true', default=False)
 
     all_args = parser.parse_known_args(args)[0]
 
@@ -184,9 +185,13 @@ def main(args):
     #     from onpolicy.runner.separated.sce_runner import MPERunner as Runner
 
     runner = Runner(config)
+
     if all_args.only_eval:
-        assert all_args.n_eval_rollout_threads == 1
+        # assert all_args.n_eval_rollout_threads == 1
         runner.run_eval()
+    elif all_args.only_render:
+        assert all_args.n_eval_rollout_threads == 1
+        runner.run_render()
     else:
         runner.run()
     

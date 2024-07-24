@@ -159,9 +159,18 @@ class SCERunner(Runner):
                 wandb.log({k: v}, step=total_num_steps)
             else:
                 self.writter.add_scalars(k, {k: v}, total_num_steps)
+
     @torch.no_grad()
     def run_eval(self):
         episodes = int(self.num_env_steps) // self.episode_length // self.n_eval_rollout_threads
+        for episode in range(episodes):
+            total_num_steps = (episode + 1) * self.episode_length * self.n_rollout_threads
+            self.eval(total_num_steps)
+            # self.render(total_num_steps)
+
+    @torch.no_grad()
+    def run_render(self):
+        episodes = 2
         for episode in range(episodes):
             total_num_steps = (episode + 1) * self.episode_length * self.n_rollout_threads
             self.render(total_num_steps)

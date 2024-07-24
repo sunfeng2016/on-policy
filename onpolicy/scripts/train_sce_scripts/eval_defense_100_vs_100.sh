@@ -3,16 +3,16 @@ env="SCE"
 scenario="defense"
 map="100_vs_100"
 algo="rmappo"
-exp="eval-v1"
+exp="eval_v5"
 seed_max=1
 
-train_exp="debug"
-train_id="run-20240702_131405-0tri95b4"
+train_exp="train-v5"
+train_id="run-20240708_150426-nykz7ys7"
 
 run_cmd="python"
 # run_cmd="python -m debugpy --listen 8888 --wait-for-client"
 
-model_dir="/home/ubuntu/sunfeng/MARL/on-policy/onpolicy/scripts/results/${env}/${scenario}/${map}/${algo}/${train_exp}/wandb/${train_id}/files/"
+model_dir="/home/ubuntu/sunfeng/MARL/on-policy/onpolicy/scripts/results/${env}/${scenario}/${map}/${algo}/${train_exp}/wandb/${train_id}/files"
 
 echo "env is ${env}, map is ${map}, algo is ${algo}, exp is ${exp}, max seed is ${seed_max}"
 for seed in `seq ${seed_max}`;

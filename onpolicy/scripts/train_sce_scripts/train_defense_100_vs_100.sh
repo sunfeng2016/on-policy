@@ -4,7 +4,7 @@ scenario="defense"
 map="100_vs_100"
 algo="rmappo"
 # exp="train_avail_action"
-exp="train-v3"
+exp="debug"
 seed_max=1
 
 run_cmd="python"

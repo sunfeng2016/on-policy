@@ -8,6 +8,7 @@ import sys
 import pygame
 import imageio
 import numpy as np
+import re
 
 sys.path.append("/home/ubuntu/sunfeng/MARL/on-policy/")
 os.environ["SDL_VIDEODRIVER"] = "dummy"
@@ -18,17 +19,25 @@ from scipy.spatial import distance
 from onpolicy.envs.swarm_Confrontation.sce_maps import get_map_params
 from onpolicy.utils.multi_discrete import MultiDiscrete
 from onpolicy.envs.starcraft2.multiagentenv import MultiAgentEnv
+from onpolicy.envs.swarm_Confrontation.utils import append_to_csv
 
 class BaseEnv(MultiAgentEnv):
     def __init__(self, args):
 
         # Set the parameters of the map
+        # self.map_name = args.map_name
+        # map_params = get_map_params(self.map_name)
+        # self.n_reds = map_params["n_reds"]
+        # self.n_blues = map_params["n_blues"]
+        # self.size_x = map_params["size_x"]
+        # self.size_y = map_params["size_y"]
+
         self.map_name = args.map_name
-        map_params = get_map_params(self.map_name)
-        self.n_reds = map_params["n_reds"]
-        self.n_blues = map_params["n_blues"]
-        self.size_x = map_params["size_x"]
-        self.size_y = map_params["size_y"]
+        matches = re.findall(r'\d+', self.map_name)
+        self.n_reds = int(matches[0])
+        self.n_blues = int(matches[1])
+        self.size_x = 8000
+        self.size_y = 5000
 
         self.episode_limit = args.episode_length
 
@@ -142,9 +151,9 @@ class BaseEnv(MultiAgentEnv):
         self.blue_img_cache = {}
 
         # 缓冲边界，当智能体飞出缓冲边界时，需要通过限制 heading action，使其飞回界内
-        self.cache_fator = 0.92
-        self.half_size_x = (self.size_x * self.cache_fator) / 2
-        self.half_size_y = (self.size_y * self.cache_fator) / 2
+        self.cache_factor = 0.92
+        self.half_size_x = (self.size_x * self.cache_factor) / 2
+        self.half_size_y = (self.size_y * self.cache_factor) / 2
 
         self.cache_bounds = np.array([
             [[ 1,  1], [-1,  1]],   # 上边界
@@ -249,7 +258,6 @@ class BaseEnv(MultiAgentEnv):
         self.outofbound_red_total = 0
         self.outofbound_blue_total = 0
 
-        
         self.red_self_destruction_num = 0
         self.red_self_destruction_total = 0
 
@@ -263,6 +271,12 @@ class BaseEnv(MultiAgentEnv):
         self.be_collided_flag = np.zeros(self.n_reds, dtype=bool)
         self.invalid_explode_flag = np.zeros(self.n_reds, dtype=bool)
         
+        # 数据存储
+        self.red_action = None
+        self.blue_action = np.array([[0,0,0] for _ in range(self.n_blues)]) # 加速度，航向，攻击
+        self.agent_data = []
+        self.filename = '/home/ubuntu/sunfeng/MARL/on-policy/onpolicy/agent_data.csv'
+
     def seed(self, seed=None):
         if seed is None:
             np.random.seed(1)
@@ -446,7 +460,30 @@ class BaseEnv(MultiAgentEnv):
         # Update step counter
         self._total_steps += 1
         self._episode_steps += 1     
-    
+
+    def dump_data(self):
+
+        # 存储数据
+        for i in range(self.n_reds):
+            if self.red_alives[i]:
+                data = {'时间步': self._episode_steps, '阵营': '红方', 'id': i, '存活状态': '存活', \
+                        '位置': np.round(self.red_positions[i], 2).tolist(), \
+                        '角度': np.round(np.degrees(self.red_directions[i]), 2).tolist(), \
+                        '速度': np.round(self.red_velocities[i], 2).tolist(), \
+                        '打击': self.red_action[i, 2], '航向': self.red_action[i, 1], '加速度': self.red_action[i, 0]}
+            else:
+                data = {'时间步': self._episode_steps, '阵营': '红方', 'id': i, '存活状态': '死亡', \
+                        '位置': np.nan, '角度': np.nan, '速度': np.nan, \
+                        '打击': np.nan, '航向': np.nan, '加速度': np.nan}
+
+            self.agent_data.append(data)
+
+        # for i in range(self.n_blues):
+        #     data = {'时间步': self._episode_steps, '阵营': '蓝方', 'id': i, '位置': self.blue_positions[i], \
+        #             '角度': self.blue_directions[i], '速度': self.blue_velocities[i], '打击': self.blue_action[i, 2], \
+        #             '航向': self.blue_action[i, 1], '加速度': self.blue_action[i, 0]}
+        #     self.agent_data.append(data)
+
     def update_observed_entities(self, positions, alives, max_num):
         # 计算红方智能体与实体之间的距离
         distance_red2entity = distance.cdist(self.red_positions, positions, 'euclidean')
