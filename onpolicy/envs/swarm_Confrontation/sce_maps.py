@@ -12,7 +12,6 @@ class SMACMap(lib.Map):
     step_mul = 8
     game_steps_per_episode = 0
 
-
 map_param_registry = {
     "100_vs_100": {
         "n_reds": 100,
@@ -32,14 +31,11 @@ map_param_registry = {
     },
 }
 
-
 def get_sce_map_registry():
     return map_param_registry
 
-
 for name in map_param_registry.keys():
     globals()[name] = type(name, (SMACMap,), dict(filename=name))
-
 
 def get_map_params(map_name):
     map_param_registry = get_sce_map_registry()

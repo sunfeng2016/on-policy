@@ -7,8 +7,8 @@ algo="rmappo"
 exp="debug"
 seed_max=1
 
-run_cmd="python"
-# run_cmd="python -m debugpy --listen 8888 --wait-for-client"
+# run_cmd="python"
+run_cmd="python -m debugpy --listen 8888 --wait-for-client"
 
 source /home/ubuntu/.conda/envs/sunfeng/bin/activate pymarl
 

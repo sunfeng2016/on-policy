@@ -21,6 +21,6 @@ do
     CUDA_VISIBLE_DEVICES=0 ${run_cmd} ../train/train_sce.py --env_name ${env} --algorithm_name ${algo} \
     --scenario_name ${scenario} --experiment_name ${exp} \
     --map_name ${map} --seed ${seed} --n_training_threads 1 --n_rollout_threads 1 --num_mini_batch 1 --episode_length 600 \
-    --num_env_steps 10000 --ppo_epoch 10 --use_value_active_masks --use_eval --eval_episodes 32 --use_mix_critic True \
-    --only_render --model_dir ${model_dir} --use_wandb
+    --num_env_steps 10000 --ppo_epoch 10 --use_value_active_masks --use_eval --eval_episodes 1 --use_mix_critic True \
+    --only_render --model_dir ${model_dir} --use_wandb --use_script --plane_name "plane_scout"
 done
