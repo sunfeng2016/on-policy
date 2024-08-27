@@ -77,14 +77,18 @@ def parse_args(args, parser):
                         help="Which smac map to run on")
     parser.add_argument('--scenario_name', type=str,
                         default='defense', help="Which scenario to run on")
+    parser.add_argument('--plane_name', type=str, default="plane_defense",
+                        help="Which plane to run on")
     parser.add_argument('--only_eval', action='store_true', default=False)
     parser.add_argument('--only_render', action='store_true', default=False)
     parser.add_argument('--use_mix_critic', action='store_true', default=False)
+    parser.add_argument('--use_script', action='store_true', default=False)
+    parser.add_argument('--save_sim_data', action='store_true', default=False)
+    
 
     all_args = parser.parse_known_args(args)[0]
 
     return all_args
-
 
 def main(args):
     parser = get_config()
@@ -181,13 +185,13 @@ def main(args):
     # run experiments
     if all_args.share_policy:
         from onpolicy.runner.shared.sce_runner import SCERunner as Runner
-    # else:
-    #     from onpolicy.runner.separated.sce_runner import MPERunner as Runner
+    else:
+        print("Can not support unshared policy.")
+        raise NotImplementedError
 
     runner = Runner(config)
 
     if all_args.only_eval:
-        # assert all_args.n_eval_rollout_threads == 1
         runner.run_eval()
     elif all_args.only_render:
         assert all_args.n_eval_rollout_threads == 1
@@ -205,7 +209,6 @@ def main(args):
     else:
         runner.writter.export_scalars_to_json(str(runner.log_dir + '/summary.json'))
         runner.writter.close()
-
 
 if __name__ == "__main__":
     main(sys.argv[1:])

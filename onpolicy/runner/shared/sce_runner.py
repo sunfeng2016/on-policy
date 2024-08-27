@@ -166,11 +166,10 @@ class SCERunner(Runner):
         for episode in range(episodes):
             total_num_steps = (episode + 1) * self.episode_length * self.n_rollout_threads
             self.eval(total_num_steps)
-            # self.render(total_num_steps)
 
     @torch.no_grad()
     def run_render(self):
-        episodes = 2
+        episodes = 1
         for episode in range(episodes):
             total_num_steps = (episode + 1) * self.episode_length * self.n_rollout_threads
             self.render(total_num_steps)
@@ -194,6 +193,8 @@ class SCERunner(Runner):
         
         eval_episode_collide = []
         eval_episode_be_collided = []
+
+        eval_episode_soft_kill = []
 
         eval_episode_kill_num = []
         eval_episode_hit_num = []
@@ -250,6 +251,7 @@ class SCERunner(Runner):
                     eval_episode_be_exploded.append(eval_infos[eval_i][0]['be_exploded_ratio'])
                     eval_episode_collide.append(eval_infos[eval_i][0]['collide_ratio'])
                     eval_episode_be_collided.append(eval_infos[eval_i][0]['be_collided_ratio'])
+                    eval_episode_soft_kill.append(eval_infos[eval_i][0]['soft_kill_ratio'])
                     eval_episode_kill_num.append(eval_infos[eval_i][0]['kill_num'])
                     eval_episode_explode_blue.append(eval_infos[eval_i][0]['explode_ratio_blue'])
                     eval_episode_length.append(eval_infos[eval_i][0]['episode_length'])
@@ -269,6 +271,7 @@ class SCERunner(Runner):
                 eval_env_infos['eval_average_episode_scout_core_ratio'] = eval_episode_scout_core
                 eval_env_infos['eval_average_episode_scout_comm_ratio'] = eval_episode_scout_comm
                 eval_env_infos['eval_average_episode_explode_ratio'] = eval_episode_explode
+                eval_env_infos['eval_average_episode_soft_kill_ratio'] = eval_episode_soft_kill
 
                 eval_env_infos['eval_average_episode_invalid_explode_ratio'] = eval_episode_invalid_explode
                 eval_env_infos['eval_average_episode_kill_num'] = eval_episode_kill_num
@@ -293,11 +296,6 @@ class SCERunner(Runner):
     def render(self, total_num_steps):
         eval_battles_won = 0
         eval_episode = 0
-
-        eval_episode_rewards = []
-        one_episode_rewards = []
-
-        eval_episode_win_reason = []
 
         eval_obs, eval_share_obs, eval_available_actions = self.eval_envs.reset()
 
@@ -327,7 +325,6 @@ class SCERunner(Runner):
             # Obser reward and next obs
             eval_obs, eval_share_obs, eval_rewards, eval_dones, eval_infos, eval_available_actions = self.eval_envs.step(eval_actions)
             self.eval_envs.render(mode='human')
-            one_episode_rewards.append(eval_rewards)
             eval_dones_env = np.all(eval_dones, axis=1)
 
             eval_rnn_states[eval_dones_env == True] = np.zeros(((eval_dones_env == True).sum(), self.num_agents, self.recurrent_N, self.hidden_size), dtype=np.float32)
@@ -338,23 +335,8 @@ class SCERunner(Runner):
             for eval_i in range(self.n_eval_rollout_threads):
                 if eval_dones_env[eval_i]:
                     eval_episode += 1
-                    eval_episode_rewards.append(np.sum(one_episode_rewards, axis=0))
-                    eval_episode_win_reason.append(eval_infos[eval_i][0]['other'])
-                    one_episode_rewards = []
                     if eval_infos[eval_i][0]['won']:
                         eval_battles_won += 1
 
             if eval_episode >= self.all_args.eval_episodes:
-                eval_episode_rewards = np.array(eval_episode_rewards)
-                eval_env_infos = {'eval_average_episode_rewards': eval_episode_rewards}                
-                self.log_env(eval_env_infos, total_num_steps)
-                eval_win_rate = eval_battles_won/eval_episode
-
-                print("eval win rate is {}.".format(eval_win_rate))
-                print("eval win reason is {}.".format(Counter(eval_episode_win_reason)))
-                
-                if self.use_wandb:
-                    wandb.log({"eval_win_rate": eval_win_rate}, step=total_num_steps)
-                else:
-                    self.writter.add_scalars("eval_win_rate", {"eval_win_rate": eval_win_rate}, total_num_steps)
                 break
