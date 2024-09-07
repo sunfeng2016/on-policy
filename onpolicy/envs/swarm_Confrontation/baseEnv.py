@@ -8,7 +8,6 @@ import sys
 import pygame
 import numpy as np
 import re
-import math
 import datetime
 import subprocess
 
@@ -20,7 +19,13 @@ os.environ["SDL_VIDEODRIVER"] = "dummy"
 from scipy.spatial import distance
 from onpolicy.utils.multi_discrete import MultiDiscrete
 from onpolicy.envs.swarm_Confrontation.plane_params import get_plane_params
-from onpolicy.envs.swarm_Confrontation.utils import append_to_csv
+from onpolicy.envs.swarm_Confrontation.utils import append_to_csv, draw_arrow, draw_sector
+
+# 定义攻击模式常量
+EXPLODE_MODE = 1
+SOFTKILL_MODE = 2
+INTERFERE_MODE = 3
+COLLIDE_MODE = 4
 
 class BaseEnv():
     def __init__(self, args):
@@ -32,6 +37,8 @@ class BaseEnv():
         self.size_x, self.size_y = 8000, 5000
         self.n_reds, self.n_blues = map(int, re.findall(r'\d+', self.map_name))
         self.n_agents = self.n_reds + self.n_blues
+        
+        self.debug = args.debug
         
         self.episode_limit = args.episode_length
         self.use_script = args.use_script
@@ -73,11 +80,9 @@ class BaseEnv():
         
         # 初始化边界参数
         self._init_boundaries()    
-
-        # 初始化渲染参数
-        self._init_explosion_rendering()
-        self._init_collision_rendering()
-        self._init_soft_kill_rendering()
+        
+        # 初始化攻击方式/载荷
+        self._init_attack_mode()
     
     def _init_capability_params(self, args):
         """
@@ -85,28 +90,39 @@ class BaseEnv():
         """
         plane_params = get_plane_params(args.plane_name)
         
+        can_attack_factor = 3
+        
         # 设置速度参数
-        self.red_max_vel, self.red_min_vel = plane_params['red_vel']
-        self.blue_max_vel, self.blue_min_vel = plane_params['blue_vel']
+        self.red_min_vel, self.red_max_vel = plane_params['red_vel']
+        self.blue_min_vel, self.blue_max_vel = plane_params['blue_vel']
         self.max_angular_vel = plane_params['max_angular_vel']
+        self.max_turn = self.max_angular_vel * self.dt_time # 每个仿真时间步的最大转向角度
         
-        # 圆形通信范围
+        # 圆形通信范围和视野角度
         self.detection_radius = plane_params['detection_radius']
+        self.view_angle = plane_params['view_angle']
         
-        # 扇形攻击范围
-        self.attack_radius = plane_params['attack_radius']
-        self.attack_angle = plane_params['attack_angle']
+        # 扇形撞击范围和允许碰撞的半径
+        self.collide_radius = plane_params['collide_radius']
+        self.collide_angle = plane_params['collide_angle']
+        self.can_collide_radius = self.collide_radius * can_attack_factor
         
-        # 允许的自爆的距离和自爆的半径
+        # 允许自爆的距离和自爆的半径
         self.explode_radius = plane_params['explode_radius']
-        self.can_explode_radius = self.explode_radius + 20
+        self.can_explode_radius = self.explode_radius * can_attack_factor
         
-        # 碰撞距离
-        self.collide_distance = plane_params['collide_distance']
+        # 软杀伤的半径和允许软杀伤的距离、次数
+        self.softkill_radius = plane_params['softkill_radius']
+        self.softkill_prob = plane_params['softkill_prob']
+        self.softkill_time = plane_params['softkill_time']
+        self.can_softkill_radius = self.softkill_radius * can_attack_factor
         
-        # 软杀伤的距离和半径
-        self.soft_kill_distance = plane_params['soft_kill_distance']
-        self.soft_kill_angle = plane_params['soft_kill_angle']
+        # 干扰的范围和持续时间
+        self.interfere_radius = plane_params['interfere_radius']
+        self.interfere_angle = plane_params['interfere_angle']
+        self.interfere_duration = plane_params['interfere_duration']
+        self.can_interfere_radius = self.interfere_radius
+        self.can_interfere_angle = self.interfere_angle + self.view_angle
         
     def _init_observation_and_state_params(self):
         """
@@ -135,21 +151,14 @@ class BaseEnv():
         self.acc_action_num = 5
         # 航向类动作数目
         self.heading_action_num = 5
-        # 动机类动作数目
-        self.attack_action_num = 4
+        # 攻击类动作数目
+        self.attack_action_num = 3
         
         self.acc_action_mid_id = self.acc_action_num // 2
         self.heading_action_mid_id = self.heading_action_num // 2
         
         self.acc_action_max = 5.0
         self.heading_action_max = 1.0
-        
-        # 单次开启软杀伤时长
-        self.soft_kill_max_time = 10
-        # 每个智能体每局可以开启软杀伤的次数
-        self.soft_kill_max_num = 1
-        # 在软杀伤范围内停留的最长时间，超过则被击毁
-        self.max_time_in_soft_kill = 3
         
         # 加速动作空间        
         self.acc_actions = np.linspace(-self.acc_action_max,
@@ -166,23 +175,6 @@ class BaseEnv():
         self.action_space = [MultiDiscrete([[0, self.acc_action_num-1],
                                             [0, self.heading_action_num-1],
                                             [0, self.attack_action_num-1]])] * self.n_reds
-        
-    def _init_soft_kill_params(self):
-        """
-        初始化软杀伤参数
-        """
-        # 单次开启软杀伤时长
-        self.soft_kill_max_time = 10
-        # 每个智能体每局可以开启软杀伤的次数
-        self.soft_kill_max_num = 1
-        # 在软杀伤范围内停留的最长时间，超过则被击毁
-        self.max_time_in_soft_kill = 3
-        # 记录红方智能体每局开过软杀伤的次数
-        self.red_soft_kill_num = np.zeros(self.n_reds)
-        # 记录蓝方智能体位于软杀伤范围内的时长
-        self.blue_in_soft_kill_time = np.zeros((self.n_reds, self.n_blues))
-        # 记录红方智能体开启软杀伤的时长
-        self.red_soft_kill_time = np.zeros(self.n_reds)
                 
     def _init_screen_params(self):
         """
@@ -207,6 +199,13 @@ class BaseEnv():
         self.screen_offset = np.array([-self.size_x / 2, self.size_y / 2])
         self.direction_scale = np.array([1, -1])
         
+        # 初始化攻击渲染参数
+        self.screen_explode_radius = self.explode_radius * self.scale_factor
+        self.screen_softkill_radius = self.softkill_radius * self.scale_factor
+        self.screen_interfere_radius = self.interfere_radius * self.scale_factor
+        self.screen_collide_radius = self.collide_radius * self.scale_factor
+        
+        
     def _init_boundaries(self):
         """
         初始化边界参数
@@ -225,10 +224,115 @@ class BaseEnv():
         self.bounds_vec = self.cache_bounds[:, 1, :] - self.cache_bounds[:, 0, :]
         self.bounds_len = np.linalg.norm(self.bounds_vec, axis=1)
         self.bounds_unitvec = self.bounds_vec / self.bounds_len[:, np.newaxis]
+    
+    def _init_attack_mode(self):
+        """
+        为智能体配置不同的攻击模式(自爆、软毁伤、干扰)。
+        """
+        # 配置比例
+        mode_ratios = {
+            EXPLODE_MODE: 0.8,
+            SOFTKILL_MODE: 0.1,
+            INTERFERE_MODE: 0.1
+        }
+
+        # 初始化红方和蓝方的攻击模式
+        self.red_explode_mode_mask, self.red_softkill_mode_mask, self.red_interfere_mode_mask, \
+        self.red_explode_mode_num, self.red_softkill_mode_num, self.red_interfere_mode_num = \
+            self._assign_attack_mode(self.n_reds, mode_ratios)
+            
+        self.blue_explode_mode_mask, self.blue_softkill_mode_mask, self.blue_interfere_mode_mask, \
+        self.blue_explode_mode_num, self.blue_softkill_mode_num, self.blue_interfere_mode_num = \
+            self._assign_attack_mode(self.n_blues, mode_ratios)
         
-        self.max_out_of_bounds_time = 10
+    def _assign_attack_mode(self, num_agents, mode_ratios):
+        """
+        为指定数量的智能体分配攻击模式。
         
-    def _init_explosion_rendering(self):
+        参数:
+        - num_agents: 智能体的数量。
+        - mode_ratios: 模式配置比例的字典。
+        
+        返回:
+        - explode_mode_mask: 自爆模式的掩码布尔数组。
+        - softkill_mode_mask: 软毁伤模式的掩码布尔数组。
+        - interfere_mode_mask: 干扰模式的掩码布尔数组。
+        - explode_num: 分配给自爆模式的智能体数量。
+        - softkill_num: 分配给软毁伤模式的智能体数量。
+        - interfere_num: 分配给干扰模式的智能体数量。
+        """
+        # 计算每种模式的智能体数量
+        explode_num = int(num_agents * mode_ratios[EXPLODE_MODE])
+        softkill_num = int(num_agents * mode_ratios[SOFTKILL_MODE])
+        interfere_num = num_agents - explode_num - softkill_num  # 剩余数量分配给干扰模式
+
+        # 初始化攻击模式数组并分配
+        attack_mode = np.array(
+            [EXPLODE_MODE] * explode_num +
+            [SOFTKILL_MODE] * softkill_num +
+            [INTERFERE_MODE] * interfere_num
+        )
+        
+        # 打乱模式顺序
+        np.random.shuffle(attack_mode)
+        
+        explode_mode_mask = attack_mode == EXPLODE_MODE
+        softkill_mode_mask = attack_mode == SOFTKILL_MODE
+        interfere_mode_mask = attack_mode == INTERFERE_MODE
+
+        # 返回掩码和对应数量
+        return (
+            explode_mode_mask, softkill_mode_mask, interfere_mode_mask,
+            explode_num, softkill_num, interfere_num
+        )
+    
+    def reset(self):
+        """
+        重置环境
+        """
+        # 重置基本计数器和状态变量
+        self._reset_basic_state()
+                       
+        # 重置观测相关变量
+        self._reset_observations()
+        
+        # 重置距离和角度矩阵
+        self.update_dist_and_angles() 
+        
+        # 重置对抗结果
+        self.win_counted = False
+        self.defeat_counted = False
+        
+        # 重置攻击统计参数
+        self._reset_attack_stats()
+        
+        # 重置每个智能体干扰的时长
+        self.red_interfere_duration = np.zeros(self.n_reds)
+        self.blue_interfere_duration = np.zeros(self.n_blues)
+        
+        # 重置每个智能体软杀伤的次数
+        self.red_softkill_time = np.zeros(self.n_reds)
+        self.blue_softkill_time = np.zeros(self.n_blues)
+        
+        # 记录开启软杀伤时的屏幕位置
+        self.softkill_positions = np.zeros((self.n_agents, 2), dtype=int)
+        
+        # 数据存储
+        self.red_action = np.zeros((self.n_reds, 3))
+        self.blue_action = np.zeros((self.n_blues, 3))  # 加速度，航向，攻击
+        self.sim_data = []
+    
+    def _reset_render_params(self):
+        """
+        初始化渲染参数
+        """
+        self._reset_explosion_rendering()
+        self._reset_softkill_rendering()
+        self._reset_interfere_rendering()
+        self._reset_collision_rendering()
+        self._reset_threat_rendering()
+        
+    def _reset_explosion_rendering(self):
         """
         初始化爆炸渲染参数
         """
@@ -240,18 +344,31 @@ class BaseEnv():
         self.blue_explosion_frames_remaining = np.zeros(self.n_blues)
         
         # 是否需要渲染主动自爆
-        self.red_self_destruction_render = np.zeros(self.n_reds, dtype=bool)
-        self.blue_self_destruction_render = np.zeros(self.n_blues, dtype=bool)
+        self.red_explode_render = np.zeros(self.n_reds, dtype=bool)
+        self.blue_explode_render = np.zeros(self.n_blues, dtype=bool)
         
-        # 当前时间步被自爆炸死的智能体
-        self.red_explode_mask = np.zeros(self.n_reds, dtype=bool)
-        self.blue_explode_mask = np.zeros(self.n_blues, dtype=bool)
-
-        # 当前时间步主动自爆的智能体
-        self.red_self_destruction_mask = np.zeros(self.n_reds, dtype=bool)
-        self.blue_self_destruction_mask = np.zeros(self.n_blues, dtype=bool)
+    def _reset_softkill_rendering(self):
+        """
+        初始化软杀伤渲染参数
+        """
+        # 软杀伤特效持续5帧
+        self.softkill_render_frames = 5
         
-    def _init_collision_rendering(self):
+        # 软杀伤特效还需要渲染的帧数
+        self.red_softkill_frames_ramaining = np.zeros(self.n_reds)
+        self.blue_softkill_frames_remaining = np.zeros(self.n_blues)
+        
+        # 是否需要渲染软杀伤开启
+        self.red_softkill_render = np.zeros(self.n_reds, dtype=bool)
+        self.blue_softkill_render = np.zeros(self.n_blues, dtype=bool)
+        
+    def _reset_interfere_rendering(self):
+        """
+        初始化干扰渲染参数
+        """
+        pass
+        
+    def _reset_collision_rendering(self):
         """
         初始化碰撞渲染参数
         """
@@ -264,6 +381,49 @@ class BaseEnv():
         # 碰撞成功的目标
         self.collide_success_target_id = np.full(self.n_agents, -1, dtype=int)
         
+    def _reset_threat_rendering(self):
+        """
+        初始化威胁区毁伤的渲染参数
+        """
+        # 需要连续渲染5帧
+        self.threat_render_frames = 5
+        
+        # 碰撞特效还需要渲染的帧数
+        self.threat_frames_ramaining = np.zeros(self.n_agents)
+        
+    
+    def _reset_action_mask_and_counter(self):
+        """
+        重置攻击/被攻击的掩码及数量(每个时间步都要重置)
+        """
+        # 当前时间步主动自爆的智能体
+        self.red_explode_mask = np.zeros(self.n_reds, dtype=bool)
+        self.blue_explode_mask = np.zeros(self.n_blues, dtype=bool)
+        
+        # 当前时间步被自爆炸死的智能体
+        self.red_explode_damage_mask = np.zeros(self.n_reds, dtype=bool)
+        self.blue_explode_damage_mask = np.zeros(self.n_blues, dtype=bool)
+        
+        # 当前时间步开启软杀伤的智能体
+        self.red_softkill_mask = np.zeros(self.n_reds, dtype=bool)
+        self.blue_softkill_mask = np.zeros(self.n_blues, dtype=bool)
+        
+        # 当前时间步被软杀伤的智能体
+        self.red_softkill_damage_mask = np.zeros(self.n_reds, dtype=bool)
+        self.blue_softkill_damage_mask = np.zeros(self.n_blues, dtype=bool)
+        
+        # 当前时间步开启干扰的智能体
+        self.red_interfere_mask = np.zeros(self.n_reds, dtype=bool)
+        self.blue_interfere_mask = np.zeros(self.n_blues, dtype=bool)
+        
+        # 当前时间步被干扰的智能体
+        self.red_interfere_damage_mask = np.zeros(self.n_reds, dtype=bool)
+        self.blue_interfere_damage_mask = np.zeros(self.n_blues, dtype=bool)
+        
+        # 当前时间步在威胁区死掉的红方智能体掩码
+        self.red_threat_damage_mask = np.zeros(self.n_reds, dtype=bool)
+        self.blue_threat_damage_mask = np.zeros(self.n_blues, dtype=bool)
+        
         # 红方发动撞击的智能体id和目标id
         self.red_collide_agent_ids = np.array([])
         self.red_collide_target_ids = np.array([])
@@ -272,51 +432,39 @@ class BaseEnv():
         self.blue_collide_agent_ids = np.array([])
         self.blue_collide_target_ids = np.array([])
         
-    def _init_soft_kill_rendering(self):
-        """
-        初始化软杀伤渲染参数
-        """
-        # 软杀伤特效还需要渲染的帧数
-        self.red_soft_kill_frames_remaining = np.zeros(self.n_reds)
-        self.blue_soft_kill_frames_remaining = np.zeros(self.n_blues)
+        # 红方采用的攻击方式的数量
+        self.red_explode_count = 0
+        self.red_softkill_count = 0
+        self.red_interfere_count = 0
+        self.red_collide_count = 0
         
-        # 软杀伤的位置
-        self.soft_kill_transformed_positions = np.zeros((self.n_agents, 2))
-
-        # 软杀伤的智能体
-        self.red_soft_kill_mask = np.zeros(self.n_reds)
-        self.blue_soft_kill_mask = np.zeros(self.n_blues)
+        # 蓝方采用攻击方式的数量
+        self.blue_explode_count = 0
+        self.blue_softkill_count = 0
+        self.blue_interfere_count = 0
+        self.blue_collide_count = 0
+        
+        # 被攻击方式毁伤的红方智能体数量
+        self.red_explode_damage_count = 0
+        self.red_softkill_damage_count = 0
+        self.red_interfere_damage_count = 0
+        self.red_collide_damage_count = 0
+        
+        # 被攻击方式毁伤的蓝方智能体数量
+        self.blue_explode_damage_count = 0
+        self.blue_softkill_damage_count = 0  
+        self.blue_interfere_damage_count = 0
+        self.blue_collide_damage_count = 0
+        
+        # 在威胁区死掉的红方智能体数量
+        self.red_threat_damage_count = 0
+        
+        # 在威胁区死掉的蓝方智能体数量
+        self.blue_threat_damage_count = 0
+        
+        # 初始化红方核心区域的被攻击次数
+        self.attack_core_num = 0            # 每个时间步红方核心区域被攻击的次数
     
-    def reset(self):
-        """
-        重置环境
-        """
-        # 重置基本计数器和状态变量
-        self._reset_basic_state()
-                       
-        # 重置观测相关变量
-        self._reset_observations()
-        
-        # 重置碰撞相关变量
-        self._reset_collision_params() 
-        
-        # 重置对抗结果
-        self.win_counted = False
-        self.defeat_counted = False
-        
-        # 重置脚本索引
-        self._reset_script_indices()
-        
-        # 重置攻击统计参数
-        self._reset_attack_stats()
-        
-        # 重置每个智能体的出界时间
-        self.out_of_bounds_time = np.zeros(self.n_agents)
-        
-        # 数据存储
-        self.red_action = np.zeros((self.n_reds, 3))
-        self.blue_action = np.zeros((self.n_blues, 3))  # 加速度，航向，攻击
-        self.sim_data = []
             
     def _reset_basic_state(self):
         """
@@ -326,15 +474,16 @@ class BaseEnv():
         self._episode_steps = 0
 
         # 重置位置、方向和速度
-        self.positions, self.directions, self.velocities = self.init_positions()
+        self.red_positions, self.red_directions, self.red_velocities, \
+            self.blue_positions, self.blue_directions, self.blue_velocities = self.init_positions()
+            
         # 重置屏幕坐标
-        self.transformed_positions = np.zeros_like(self.positions, dtype=int)
+        self.update_transformed_positions()
         
         # 重置存活状态
-        self.alives = np.ones(self.n_agents, dtype=bool)
+        self.red_alives = np.ones(self.n_reds, dtype=bool)
+        self.blue_alives = np.ones(self.n_blues, dtype=bool)
         
-        # 状态分离
-        self.split_state()
         
     def _reset_observations(self):
         """
@@ -345,108 +494,44 @@ class BaseEnv():
         self.distance_observed_allies = np.zeros((self.n_reds, self.max_observed_allies))
         self.distance_observed_enemies = np.zeros((self.n_reds, self.max_observed_enemies))
         
-    def _reset_collision_params(self):
-        """
-        重置状态相关变量
-        """
-        self.distances_red2blue = None
-        self.angles_red2blue = None
-        self.red_targets = None
-        self.angles_diff_red2blue = None
-        
-    def _reset_script_indices(self):
-        """
-        重置脚本索引
-        """
-        # 定义每种脚本操作的红方智能体数量
-        self.script_explode_num = 10
-        self.script_collide_num = 10
-        self.script_soft_kill_num = 10
-        
-        # 生成红方智能体的索引并随机打乱
-        red_agents_indices = np.random.permutation(self.n_reds)
-        
-        # 分配不同脚本操作的红方智能体索引
-        start_id, end_id = 0, self.script_explode_num
-        self.script_explode_ids = red_agents_indices[start_id:end_id]
-        start_id, end_id = end_id, end_id + self.script_collide_num
-        self.script_collide_ids = red_agents_indices[start_id:end_id]
-        start_id, end_id = end_id, end_id + self.script_soft_kill_num
-        self.script_soft_kill_ids = red_agents_indices[start_id:end_id]
-        
     def _reset_attack_stats(self):
         """
         重置攻击统计参数
         """
-        # 当前步被炸死的红方智能体数量
-        self.explode_red_num = 0 
-        # 当前回合被炸死的红方智能体总数
-        self.explode_red_total = 0 
+        # 红方采用的攻击方式的总数
+        self.red_explode_total = 0
+        self.red_softkill_total = 0
+        self.red_interfere_total = 0
+        self.red_collide_total = 0
         
-        # 当前步被炸死的蓝方智能体数量
-        self.explode_blue_num = 0
-        # 当前回合被炸死的蓝方智能体总数
-        self.explode_blue_total = 0
+        # 蓝方采用攻击方式的总数
+        self.blue_explode_total = 0
+        self.blue_softkill_total = 0
+        self.blue_interfere_total = 0
+        self.blue_collide_total = 0
         
-        # 当前步无效自爆的红方智能体数量
-        self.invalid_explode_red_num = 0
-        # 当前回合无效自爆的红方智能体总数
-        self.invalid_explode_red_total = 0
+        # 被攻击方式毁伤的红方智能体总数
+        self.red_explode_damage_total = 0
+        self.red_softkill_damage_total = 0
+        self.red_interfere_damage_total = 0
+        self.red_collide_damage_total = 0
         
-        # 当前步被撞死的红方智能体数量
-        self.collide_red_num = 0
-        # 当前回合被撞死的红方智能体总数
-        self.collide_red_total = 0
+        # 被攻击方式毁伤的蓝方智能体总数
+        self.blue_explode_damage_total = 0
+        self.blue_softkill_damage_total = 0  
+        self.blue_interfere_damage_total = 0
+        self.blue_collide_damage_total = 0
         
-        # 当前步被撞死的蓝方智能体数量
-        self.collide_blue_num = 0
-        # 当前回合被撞死的蓝方智能体总数
-        self.collide_blue_total = 0
+        # 在威胁区死掉的红方智能体总数
+        self.red_threat_damage_total = 0
         
-        # 当前步出界的红方智能体数量
-        self.outofbound_red_num = 0
-        # 当前回合出界的红方智能体总数
-        self.outofbound_red_total = 0
+        # 在威胁区死掉的蓝方智能体总数
+        self.blue_threat_damage_total = 0
         
-        # 当前步出界的蓝方智能体数量
-        self.outofbound_blue_num = 0
-        # 当前回合出界的蓝方智能体总数
-        self.outofbound_blue_total = 0
+        # 初始化当前回合红方核心区域被打击的总次数
+        self.attack_core_total = 0          # 当前回合红方高价值区域被打击的总次数
         
-        # 当前时间步被软杀伤的蓝方智能体数量
-        self.soft_kill_blue_num = 0
-        # 当前回合被软杀伤杀死的蓝方智能体总数
-        self.soft_kill_blue_total = 0 
-
-        # 当前时间步自爆的红方智能体数量
-        self.red_self_destruction_num = 0
-        # 当前回合自爆的红方智能体总数
-        self.red_self_destruction_total = 0
-
-        # 当前时间步自爆的蓝方智能体数量
-        self.blue_self_destruction_num = 0
-        # 当前时间步自爆的蓝方智能体总数
-        self.blue_self_destruction_total = 0
-        
-        # 红方是否自爆
-        self.explode_flag = np.zeros(self.n_reds, dtype=bool)
-        # 红方是否被自爆
-        self.be_exploded_flag = np.zeros(self.n_reds, dtype=bool)
-        # 红方是否撞击
-        self.collide_flag = np.zeros(self.n_reds, dtype=bool)
-        # 红方是否被撞击
-        self.be_collided_flag = np.zeros(self.n_reds, dtype=bool)
-        # 红方是否无效自爆
-        self.invalid_explode_flag = np.zeros(self.n_reds, dtype=bool)
-        # 记录每个红方智能体的软杀伤范围内的最近目标
-        self.soft_kill_targets = np.full(self.n_reds, -1)
-        
-        # 记录红方智能体每局开过软杀伤的次数
-        self.red_soft_kill_num = np.zeros(self.n_reds)
-        # 记录蓝方智能体位于软杀伤范围内的时长
-        self.blue_in_soft_kill_time = np.zeros((self.n_reds, self.n_blues))
-        # 记录红方智能体开启软杀伤的时长
-        self.red_soft_kill_time = np.zeros(self.n_reds)
+        self._reset_action_mask_and_counter()
         
     def seed(self, seed=None):
         if seed is None:
@@ -458,98 +543,24 @@ class BaseEnv():
         """
         随机初始化红蓝双方智能体的位置
         """
-        positions = (np.random.rand(self.n_agents, 2) - 0.5) * np.array([self.size_x, self.size_y])
-        directions = (np.random.rand(self.n_agents) - 0.5) * 2 * np.pi
-        velocities = np.hstack([np.ones(self.n_reds) * self.red_max_vel, np.ones(self.n_blues) * self.blue_max_vel])
-
-        return positions, directions, velocities
-    
-    def check_boundaries(self):
-        """
-        检查所有智能体是否超出边界，并更新超出边界的计时和状态
-        """
-        # 计算区域的半高和半宽
-        half_size_x = self.size_x / 2
-        half_size_y = self.size_y / 2
-
-        # 检查智能体是否超出了x轴或者y轴的边界
-        positions_x = self.positions[:, 0]
-        positions_y = self.positions[:, 1]
-        
-        out_of_bounds_x = (positions_x < -half_size_x) | (positions_x > half_size_x)
-        out_of_bounds_y = (positions_y < -half_size_y) | (positions_y > half_size_y)
-        
-        # 合并x和y方向的边界检查结果，获取最终超出边界的智能体
-        out_of_bounds = out_of_bounds_x | out_of_bounds_y
-        
-        # 对于出界的智能体，增加其出界的时间计数；未出边界的重置为0
-        self.out_of_bounds_time[out_of_bounds] += 1
-        self.out_of_bounds_time[~out_of_bounds] = 0
-
-        # 检查哪些智能体出界时间超过了允许的最大时间，标记为死亡
-        dead_or_not = self.out_of_bounds_time >= self.max_out_of_bounds_time 
-
-        # 计算红色和蓝色智能体中，因出界而死亡的数量
-        self.outofbound_red_num = np.sum(dead_or_not[:self.n_reds] & self.red_alives)
-        self.outofbound_blue_num = np.sum(dead_or_not[self.n_reds:] & self.blue_alives)
-
-        # 更新因出界死亡的红方和蓝方智能体总数
-        self.outofbound_red_total += self.outofbound_red_num
-        self.outofbound_blue_total += self.outofbound_blue_num
-
-        # 将出界的智能体标记为死亡
-        self.alives[dead_or_not] = False
-
-    def explode(self, i):
         pass
-
-    def collide(self, i):
-        pass
-
-    def soft_kill(self, i):
-        pass
-    
-    def split_state(self):
-        """
-        将整体的状态拆分成红方和蓝方的状态
-        """
-        # 根据红方的数量 n_reds, 将位置、方向、速度和存活状态拆分为红方和蓝方的部分
-        slice_reds = slice(self.n_reds)
-        slice_blues = slice(self.n_reds, None)    
         
-        self.red_positions = self.positions[slice_reds]
-        self.red_directions = self.directions[slice_reds]
-        self.red_velocities = self.velocities[slice_reds]
-        self.red_alives = self.alives[slice_reds]
-
-        self.blue_positions = self.positions[slice_blues]
-        self.blue_directions = self.directions[slice_blues]
-        self.blue_velocities = self.velocities[slice_blues]
-        self.blue_alives = self.alives[slice_blues]
-
-    def merge_state(self):
-        """
-        将红方和蓝方的状态合并为整体的状态
-        """
-        # 使用numpy的vstack和hstack将蓝方和红方的状态合并为整体
-        self.positions = np.vstack([self.red_positions, self.blue_positions])
-        self.directions = np.hstack([self.red_directions, self.blue_directions])
-        self.velocities = np.hstack([self.red_velocities, self.blue_velocities])
-        self.alives = np.hstack([self.red_alives, self.blue_alives])
-        
-    def _perform_attack_actions(self, attack_t, pt):
+    def _perform_attack_actions(self, attack_t):
         """
         执行红方的攻击动作,包括自爆,碰撞和软杀伤
         """
         # 处理攻击动作的掩码
-        explode_mask = (attack_t == 1)
-        collide_mask = (attack_t == 2)
-        soft_kill_mask = (attack_t == 3)
+        explode_mask = (attack_t == 1) & self.red_explode_mode_mask         # 自爆
+        softkill_mask = (attack_t == 1) & self.red_softkill_mode_mask       # 软杀伤
+        interfere_mask = (attack_t == 1) & self.red_interfere_mode_mask     # 干扰
+        collide_mask = (attack_t == 2)                                      # 撞击
         
         # 执行攻击动作
         self.red_explode(explode_mask)
-        pt = self.red_collide(collide_mask, pt)
-        pt = self.red_soft_kill(soft_kill_mask, pt)
+        self.red_softkill(softkill_mask)
+        self.red_interfere(interfere_mask)
+        
+        self.red_collide(collide_mask)
         
     def _update_red_position_and_direction(self, at, pt):
         """
@@ -561,7 +572,7 @@ class BaseEnv():
         
         # 更新方向：确保角度在[-pi, pi]区间内
         self.red_directions[alive_mask] = (
-            (self.red_directions[alive_mask] + pt[alive_mask] * self.max_angular_vel * self.dt_time + np.pi) \
+            (self.red_directions[alive_mask] + pt[alive_mask] * self.max_turn + np.pi) \
             % (2 * np.pi) - np.pi
         )    
         
@@ -607,199 +618,147 @@ class BaseEnv():
         explode_mask: 表示哪些红方智能体选择自爆的布尔掩码
         """
         # 过滤掉已死亡的红方智能体，获取有效的自爆掩码
-        valid_explode_mask = explode_mask & self.red_alives         # (nreds,)
+        red_explode_mask = explode_mask & self.red_alives         # (nreds,)
         
-        if not np.any(valid_explode_mask):
+        if not np.any(red_explode_mask):
             return
-
-        # 记录有效的自爆掩码，用作渲染
-        self.red_self_destruction_mask = valid_explode_mask
-
-        # 计算有效自爆红方智能体与所有蓝方智能体之间的距离
-        distances_red2blue = self.get_dist()                        # (nreds, nblues)
         
-        # 判断蓝方智能体是否在自爆范围内
-        blue_in_explode_zone = distances_red2blue[valid_explode_mask] < self.explode_radius     # (nreds_explode, nblues)
-
-        # 标记有效自爆的红方智能体为死亡，并更新自爆数量和总数
-        self.red_alives[valid_explode_mask] = False  
-        self.red_self_destruction_num = np.sum(valid_explode_mask)
-        self.red_self_destruction_total += self.red_self_destruction_num
-
-        # 统计无效自爆（即自爆未击中任何蓝方智能体）的红方智能体数量
-        valid_blue_mask = blue_in_explode_zone & self.blue_alives                   # (nreds_explode, nblues)
-        valid_explode = np.any(valid_blue_mask, axis=1) # 判断每个红方自爆是否有效    # (nreds_explode,)
-        self.invalid_explode_red_num = np.sum(~valid_explode)
-        self.invalid_explode_red_total += self.invalid_explode_red_num
+        # print(f"Step: {self._episode_steps} Explode_mask: {np.where(red_explode_mask)[0]}")
         
-        # 更新自爆标记和无效自爆标记
-        self.explode_flag[valid_explode_mask] = valid_explode
-        self.invalid_explode_flag[valid_explode_mask] = ~valid_explode
-
-        # 标记被自爆击中的蓝方智能体为死亡，并统计有效击中的蓝方智能体数量
-        blue_explode_mask = np.any(blue_in_explode_zone, axis=0) & self.blue_alives
-        self.explode_blue_num = np.sum(blue_explode_mask)
-        self.explode_blue_total += self.explode_blue_num
-        self.blue_alives[blue_explode_mask] = False
-        self.blue_explode_mask = blue_explode_mask
-
-    def red_collide(self, collide_mask, pt):
+        # 判断蓝方智能体是否在自爆范围
+        blue_in_explode_zone = (self.distances_red2blue[red_explode_mask] < self.explode_radius) & self.blue_alives
+            
+        # 更新红方自爆统计和状态
+        self.red_explode_mask = red_explode_mask
+        self.red_explode_count = np.sum(red_explode_mask)
+        self.red_explode_total += self.red_explode_count
+        
+        self.red_alives[red_explode_mask] = False
+        
+        # 更新蓝方毁伤统计和状态
+        self.blue_explode_damage_mask = np.any(blue_in_explode_zone, axis=0)
+        self.blue_explode_damage_count = np.sum(self.blue_explode_damage_mask)
+        self.blue_explode_damage_total += self.blue_explode_damage_count
+        
+        self.blue_alives[self.blue_explode_damage_mask] = False
+        
+    def red_softkill(self, softkill_mask):
+        """
+        处理红方智能体的软杀伤逻辑
+        
+        参数:
+        softkill_mask: 表示哪些红方智能体选择软杀伤的布尔掩码
+        """
+        # 过滤掉已经死亡的红方智能体，获取有效的软杀伤掩码
+        red_softkill_mask = softkill_mask & self.red_alives
+        
+        if not np.any(red_softkill_mask):
+            return
+        
+        # print(f"Step: {self._episode_steps} Softkill_mask: {np.where(red_softkill_mask)[0]}")
+        
+        # 判断蓝方智能体是否在软杀伤范围内
+        blue_in_softkill_zone = (self.distances_red2blue[red_softkill_mask] < self.softkill_radius) & self.blue_alives
+        
+        # 更新红方软杀伤统计和状态
+        self.red_softkill_mask = red_softkill_mask
+        self.red_softkill_count = np.sum(red_softkill_mask)
+        self.red_softkill_total += self.red_softkill_count
+        self.red_softkill_time[red_softkill_mask] += 1
+        
+        # 更新蓝方毁伤统计和状态
+        random_prob = np.random.rand(self.n_blues)
+        self.blue_softkill_damage_mask = np.any(blue_in_softkill_zone, axis=0) & (random_prob < self.softkill_prob) # 以60%的概率被软毁伤
+        self.blue_softkill_damage_count = np.sum(self.blue_softkill_damage_mask)
+        self.blue_softkill_damage_total += self.blue_softkill_damage_count
+        
+        self.blue_alives[self.blue_softkill_damage_mask] = False
+        
+        # 记录软杀伤的位置
+        mask = np.hstack((self.red_softkill_mask, self.blue_softkill_damage_mask))
+        self.softkill_positions[mask] = self.transformed_positions[mask]
+        
+    def red_interfere(self, interfere_mask):
+        """
+        处理红方只能提的干扰逻辑
+        
+        参数:
+        interfere_mask: 表示哪些红方智能体选择干扰的布尔掩码
+        """
+        # 过滤掉已经死亡的红方智能体，获取有效的干扰掩码
+        red_interfere_mask = interfere_mask & self.red_alives
+        
+        if not np.any(red_interfere_mask):
+            return
+        
+        # print(f"Step: {self._episode_steps} Interfere_mask: {np.where(red_interfere_mask)[0]}")
+        
+        # 判断蓝方智能体是否在干扰范围内
+        blue_in_interfere_zone = (
+            (self.distances_red2blue[red_interfere_mask] < self.interfere_radius) & 
+            (np.abs(self.angles_diff_red2blue[red_interfere_mask]) < self.interfere_angle / 2) &
+            self.blue_alives
+        )
+        
+        # 更新红方干扰统计和状态
+        self.red_interfere_mask = red_interfere_mask
+        self.red_interfere_count = np.sum(self.red_interfere_duration[red_interfere_mask] == 0) # 首次开干扰
+        self.red_interfere_total += self.red_interfere_count
+        
+        self.red_interfere_duration[red_interfere_mask] += 1
+        
+        # 更新蓝方干扰统计和状态
+        self.blue_interfere_damage_mask = np.any(blue_in_interfere_zone, axis=0)
+        self.blue_interfere_damage_count = np.sum(self.blue_interfere_damage_mask)
+        self.blue_interfere_damage_total += self.blue_collide_damage_count
+            
+    def red_collide(self, collide_mask):
         """
         处理红方智能体与其目标之间的碰撞逻辑
         
         参数：
         collide_mask: 表示哪些红方智能体尝试与目标碰撞的布尔掩码。
-        pt: 红方智能体的状态参数数组，用于更新智能体的方向。
-        
-        返回:
-        更新后的状态数组 pt。
         """
         
         # 过滤掉已经死亡的红方智能体，生成有效的碰撞掩码
-        valid_collide_mask = collide_mask & self.red_alives
+        red_collide_mask = collide_mask & self.red_alives
         
-        if not np.any(valid_collide_mask):
-            return pt
+        if not np.any(red_collide_mask):
+            return
         
-        # 获取红方智能体与蓝方智能体的角度差
-        angles_red2blue, angles_diff_red2blue = self.get_angles_diff() #(nreds, nblues)
-        
-        # 获取红方智能体到蓝方智能体的距离
-        distances_red2blue = self.get_dist()
-        
-        # 判断蓝方智能体是否在红方攻击范围内
-        blue_in_attack_zone = (distances_red2blue < self.attack_radius) & (
-            np.abs(angles_diff_red2blue) < self.attack_angle/2) # (n_reds, nblues)
-        
-        # 将不在攻击范围内的智能体距离设置为无限大
-        distances_red2blue[~blue_in_attack_zone] = np.inf
-        
-        # 找个每个红方智能体最近的蓝方智能体
-        nearest_blue_id = np.argmin(distances_red2blue, axis=1)
-        
-        # 如果红方智能体没有攻击范围内的蓝方智能体，目标设为1
-        nearest_blue_id[np.all(np.isinf(distances_red2blue), axis=1)] = -1
-        
-        # 获取红方智能体的目标索引
-        red_targets = nearest_blue_id
-        
-        if not np.any(red_targets != -1):
-            return pt
-
         # 获取有效的红方智能体和目标的索引
-        agent_ids = np.where(valid_collide_mask)[0]
-        target_ids = red_targets[valid_collide_mask]
+        agent_ids = np.where(red_collide_mask)[0]
+        target_ids = self.red_collide_targets[red_collide_mask]
 
         # 计算有效红方智能体与其目标之间的距离
-        valid_distances = distances_red2blue[valid_collide_mask, target_ids]
+        valid_distances = self.distances_red2blue[red_collide_mask, target_ids]
 
         # 判断哪些红方智能体成功撞击到目标
-        collide_success_mask = valid_distances < self.collide_distance
-        success_agent_ids = agent_ids[collide_success_mask]
-        success_target_ids = target_ids[collide_success_mask]
+        success_mask = (valid_distances < self.collide_radius) & self.blue_alives[target_ids]
+        
+        if not np.any(success_mask):
+            return
+        
+        success_agent_ids = agent_ids[success_mask]
+        success_target_ids = target_ids[success_mask]
         
         # 更新撞击成功的红方智能体和蓝方目标智能体的存活状态
         self.red_alives[success_agent_ids] = False
         self.blue_alives[success_target_ids] = False
 
-        # 统计成功撞击的数量并更新总数
-        self.collide_blue_num = success_agent_ids.size
-        self.collide_blue_total += self.collide_blue_num
-
+        # 更新统计数据
+        successful_collisions = success_agent_ids.size
+        
+        self.red_collide_count = successful_collisions
+        self.red_collide_total += successful_collisions
+        
+        self.blue_collide_damage_count = successful_collisions
+        self.blue_collide_damage_total += successful_collisions
+        
         # 记录成功撞击的红方智能体和目标蓝方智能体的索引，用于渲染
         self.red_collide_agent_ids = success_agent_ids
         self.red_collide_target_ids = success_target_ids
-
-        # 更新碰撞标记
-        self.collide_flag = np.zeros(self.n_reds, dtype=bool)
-        self.collide_flag[success_agent_ids] = True
-
-        # 更新有效碰撞的红方智能体的方向，使其朝向目标
-        self.red_directions[valid_collide_mask] = angles_red2blue[valid_collide_mask, red_targets[valid_collide_mask]]
-        
-        # 将有效碰撞的红方智能体pt值设为0
-        pt[valid_collide_mask] = 0
-
-        return pt
     
-    def red_soft_kill(self, soft_kill_mask, pt):
-        """
-        处理红方智能体的软杀伤逻辑，包括目标选择、蓝方智能体的软杀伤判定以及红方智能体的航向调整。
-        
-        参数:
-        soft_kill_mask: 表示哪些红方智能体尝试执行软杀伤的布尔掩码。
-        pt: 红方智能体的状态参数数组，用于更新智能体的航向。
-        
-        返回：
-        更新后的状态参数数组 pt。
-        """
-        # 更新软杀伤的掩码，过滤掉已经死亡或软杀伤次数已经达到上限的红方智能体
-        valid_soft_kill_mask = soft_kill_mask & self.red_alives & (self.red_soft_kill_num < self.soft_kill_max_num)
-        
-        if not np.any(valid_soft_kill_mask):
-            return pt   # 如果没有有效的红方智能体需要软杀伤，直接返回
-        
-        # 计算红方智能体与蓝方智能体之间的距离
-        distances_red2blue = self.get_dist()
-        
-        # 计算红方智能体与蓝方智能体之间的角度差
-        angles_red2blue, angles_diff_red2blue = self.get_angles_diff()
-        
-        # 判断蓝方智能体是否在红方智能体的软杀伤范围内
-        blue_in_soft_kill_zone = (distances_red2blue <= self.soft_kill_distance) & (np.abs(angles_diff_red2blue) <= self.soft_kill_angle / 2)
-        
-        # 对于无效的红方软杀伤掩码，将对应蓝方的软杀伤范围设为False
-        blue_in_soft_kill_zone[~valid_soft_kill_mask] = False
-        
-        # 将不在软杀伤范围内蓝方距离设置为无穷大，以便后续选择最近目标
-        distances_red2blue[~blue_in_soft_kill_zone] = np.inf
-        
-        # 找出每个有效红方智能体的软杀伤目标（最近的蓝方智能体）
-        soft_kill_targets = np.argmin(distances_red2blue[valid_soft_kill_mask], axis=1)
-        
-        # 如果软杀伤范围内没有蓝方智能体，则目标设为-1
-        soft_kill_targets[np.all(np.isinf(distances_red2blue[valid_soft_kill_mask]), axis=1)] = -1
-        
-        # 对于尝试软杀伤的红方智能体，增加其软杀伤次数
-        self.red_soft_kill_num[valid_soft_kill_mask] += 1
-        
-        # 对于有效的软杀伤掩码智能体，记录其软杀伤状态的时长
-        self.red_soft_kill_time[valid_soft_kill_mask] = self.soft_kill_max_time
-        
-        # 存储每个有效红方智能体的软杀伤目标
-        self.soft_kill_targets[valid_soft_kill_mask] = soft_kill_targets
-        
-        # 记录蓝方智能体在软杀伤范围内的时长
-        self.blue_in_soft_kill_time[blue_in_soft_kill_zone] += 1
-        # TODO：加上角度差的判断
-        
-        # 初始化蓝方软杀伤的掩码，并标记在软杀伤范围内停留时间超过阈值的蓝方智能体为死亡
-        self.blue_soft_kill_mask = np.any(self.blue_in_soft_kill_time >= self.max_time_in_soft_kill, axis=0)
-        self.blue_alives[self.blue_soft_kill_mask] = False
-        
-        # 统计总共被软杀伤的蓝方智能体数量
-        self.soft_kill_blue_num = np.sum(self.blue_soft_kill_mask)
-        self.soft_kill_blue_total += self.soft_kill_blue_num
-        
-        # 记录红方开启软杀伤的智能体，用作渲染
-        self.red_soft_kill_mask = valid_soft_kill_mask
-        
-        # 处理处于软杀伤状态的红方智能体
-        soft_kill_open = self.red_soft_kill_time > 0 # (n_reds,)
-        
-        if np.any(soft_kill_open):
-            # 更新智能体的方向
-            valid_target_mask = soft_kill_open & (self.soft_kill_targets != -1)
-            
-            valid_indices = np.where(valid_target_mask)[0]
-            self.red_directions[valid_indices] = angles_red2blue[valid_target_mask, self.soft_kill_targets[valid_target_mask]]
-            pt[valid_indices] = 0
-            
-            # 软杀伤状态时长减少
-            self.red_soft_kill_time[soft_kill_open] -= 1
-            
-        return pt
-
     def step(self, actions):
         """
         执行所有智能体的动作，包括攻击和移动，并更新各项状态。
@@ -808,57 +767,40 @@ class BaseEnv():
         actions: 包含所有智能体动作，形状为 (n,3)
                  其中第一列为加速度动作，第二列为航向动作，第三列为攻击动作。        
         """
-        # 获取加速度、航向和攻击动作
+        pass
+    
+    def red_step(self, actions):
+        """
+        执行所有智能体的动作，包括攻击和移动，并更新各项状态。
+        
+        参数：
+        actions: 包含所有智能体动作，形状为 (n,3)
+                 其中第一列为加速度动作，第二列为航向动作，第三列为攻击动作。        
+        """
+        # 解析红方智能体的动作
         at = self.acc_actions[actions[:, 0]]
         pt = self.heading_actions[actions[:, 1]]
         attack_t = actions[:, 2]
-
-        # 执行攻击动作
-        for i in range(self.n_agents):
-            if not self.alives[i]:
-                continue
             
-            if attack_t[i] == 1:
-                # 自爆逻辑
-                pass
-            elif attack_t[i] == 2:
-                # 碰撞逻辑
-                pass
-            elif attack_t[i] == 3:
-                # 软杀伤逻辑
-                pass
-            elif attack_t[i] != 0:
-                raise ValueError(f"未知的攻击动作：{attack_t[i]}")
-
-        # 更新方向
-        self.directions += pt * self.max_angular_vel * self.dt_time
-        self.directions = (self.directions + np.pi) % (2 * np.pi) - np.pi
+        # 执行攻击动作
+        self._perform_attack_actions(attack_t)
         
-        # 更新速度
-        self.velocities += at * self.dt_time
-        self.velocities[:self.n_reds] = np.clip(self.velocities[:self.n_reds], self.red_min_vel, self.red_max_vel)
-        self.velocities[self.n_reds:] = np.clip(self.velocities[self.n_reds:], self.blue_min_vel, self.blue_max_vel)
+        # 更新红方的位置和方向
+        self._update_red_position_and_direction(at, pt)
         
-        # 更新位置
-        delta_positions = np.column_stack((self.velocities * np.cos(self.directions), 
-                                       self.velocities * np.sin(self.directions))) * self.dt_time
-        self.positions += delta_positions
-        
-        # 分离状态并检查边界
-        self.split_state()
-        self.check_boundaries()
-
-        # 更新步骤计数器
-        self._total_steps += 1
-        self._episode_steps += 1  
-
-    def update_observed_entities(self, positions, alives, max_num):
+        # 如果需要保存仿真数据，则记录红方的动作信息
+        if self.save_sim_data:
+            self.red_action = np.stack([at, pt * self.max_turn * 180 / np.pi, attack_t], axis=-1)
+            
+        # 更新距离矩阵和角度矩阵
+        self.update_dist_and_angles()
+    
+    def update_observed_entities(self, distances, max_num):
         """
         更新红方智能体观测到的实体信息，返回每个红方智能体在通信范围内的最近实体的索引和距离。
 
         参数:
-        positions: 实体的位置数组，形状为 (n_entities, 2)。
-        alives: 实体的存活状态布尔数组，形状为 (n_entities,)。
+        distances: 红方与其它实体之间的距离矩阵，形状为 (nreds, M)。
         max_num: 每个红方智能体可以观测到的最大实体数量。
 
         返回:
@@ -867,14 +809,8 @@ class BaseEnv():
         nearest_dist: 每个红方智能体到最近实体的距离，形状为 (n_reds, max_num)。
                     若不足 max_num 个实体，则用 np.inf 填充。
         """
-        # 计算红方智能体与所有实体之间的欧几里得距离
-        distance_red2entity = distance.cdist(self.red_positions, positions, 'euclidean')
-
-        # 创建有效性掩码，只考虑存活的红方智能体与存活的实体之间的距离
-        valid_mask = self.red_alives[:, np.newaxis] & alives[np.newaxis, :]
-
-        # 将无效的距离设置为无限大，以便后续处理
-        distance_red2entity = np.where(valid_mask, distance_red2entity, np.inf)
+        # 计算红方智能体与其它实体之间的欧几里得距离
+        distance_red2entity = distances.copy()
 
         # 判断哪些实体在红方智能体的通信范围内
         in_radius_entities = distance_red2entity < self.detection_radius
@@ -895,48 +831,105 @@ class BaseEnv():
         nearest_id[np.isinf(nearest_dist)] = -1
 
         return nearest_id, nearest_dist
-
-    def get_angles_diff(self):
-        """
-        计算红方智能体到蓝方智能体的角度差
-        """
-        # 计算红方智能体到蓝方智能体的方向向量
-        delta_red2blue = self.blue_positions[np.newaxis, :, :] - self.red_positions[:, np.newaxis, :]   # nred x nblue x 2
-
-        # 计算红方智能体到蓝方智能体的角度
-        angles_red2blue = np.arctan2(delta_red2blue[:, :, 1], delta_red2blue[:, :, 0])                  # nred x nblue
-
-        # 计算红方智能体当前方向与到蓝方智能体的方向的角度差
-        angles_diff_red2blue = angles_red2blue - self.red_directions[:, np.newaxis]                     # nred x nblue
-        angles_diff_red2blue = (angles_diff_red2blue + np.pi) % (2 * np.pi) - np.pi
-
-        return angles_red2blue, angles_diff_red2blue
     
-    def get_dist(self):
+    def _calculate_angles(self, delta_vectors):
         """
-        计算红方智能体到蓝方智能体的距离矩阵
+        计算给定方向向量的角度。
+
+        参数:
+        - delta_vectors: 方向向量的数组，形状为 (N, M, 2)，其中 N 和 M 是两个智能体群体的数量。
+
+        返回:
+        - angles: 对应于每个方向向量的角度，范围为 [-π, π]。
         """
-        dist = distance.cdist(self.red_positions, self.blue_positions, 'euclidean')
-        mask = self.red_alives[:, np.newaxis] & self.blue_alives[np.newaxis, :]
-        dist[~mask] = np.inf
+        return (np.arctan2(delta_vectors[:, :, 1], delta_vectors[:, :, 0]) + np.pi) % (2 * np.pi) - np.pi
+    
+    def _calculate_angle_diff(self, angles, directions):
+        """
+        计算智能体当前方向与目标方向之间的角度差。
+
+        参数:
+        - angles: 目标方向的角度数组，形状为 (N, M)。
+        - directions: 当前智能体的方向数组，形状为 (N,)。
+
+        返回:
+        - angles_diff: 角度差数组，形状为 (N, M)，范围为 [-π, π]。
+        """
+        angles_diff = angles - directions[:, np.newaxis]
+            
+        return (angles_diff + np.pi) % (2 * np.pi) - np.pi
+    
+    def _calculate_angles_and_diffs(self, delta_vectors, directions_A):
+        """
+        计算给定方向向量的角度以及角度差。
+
+        参数:
+        - delta_vectors: 方向向量的数组，形状为 (N, M, 2)。
+        - directions_A: 当前智能体的方向数组，形状为 (N,)。
+
+        返回:
+        - angles: 对应于每个方向向量的角度，范围为 [-π, π]。
+        - angles_diff: 角度差数组，形状为 (N, M)，范围为 [-π, π]。
+        """
+        angles = (np.arctan2(delta_vectors[:, :, 1], delta_vectors[:, :, 0]) + np.pi) % (2 * np.pi) - np.pi
+        angles_diff = (angles - directions_A[:, np.newaxis] + np.pi) % (2 * np.pi) - np.pi
+        return angles, angles_diff
+    
+    def _calculate_dist_and_angles(self, positions_A, positions_B, directions_A, directions_B, alives_A, alives_B, is_same=False):
+        """
+        计算智能体群体A到群体B的距离、角度和角度差。
+
+        参数:
+        - positions_A: 群体A的坐标数组，形状为 (N, 2)。
+        - positions_B: 群体B的坐标数组，形状为 (M, 2)。
+        - directions_A: 群体A的方向数组，形状为 (N,)。
+        - directions_B: 群体B的方向数组，形状为 (M,)。
+        - alives_A: 群体A的存活状态布尔数组，形状为 (N,)。
+        - alives_B: 群体B的存活状态布尔数组，形状为 (M,)。
+
+        返回:
+        - distances_A2B: A到B的距离矩阵，形状为 (N, M)。
+        - angles_A2B: A到B的角度矩阵，形状为 (N, M)。
+        - angles_diff_A2B: A到B的角度差矩阵，形状为 (N, M)。
+        """
+        # 计算方向向量 delta_A2B 和距离矩阵
+        delta_A2B = positions_B[np.newaxis, :, :] - positions_A[:, np.newaxis, :]   
+        distances_A2B = np.linalg.norm(delta_A2B, axis=2)  # 计算欧几里得距离
         
-        return dist
+        # 创建存活掩码，仅对存活的智能体进行计算
+        mask = alives_A[:, np.newaxis] & alives_B[np.newaxis, :]
+        distances_A2B[~mask] = np.inf
+        
+        # 计算A到B的角度和角度差
+        angles_A2B, angles_diff_A2B = self._calculate_angles_and_diffs(delta_A2B, directions_A)
+        
+        if is_same:
+            np.fill_diagonal(distances_A2B, np.inf)
+            np.fill_diagonal(angles_A2B, np.inf)
+            np.fill_diagonal(angles_diff_A2B, np.inf)
+            
+        
+        return distances_A2B, angles_A2B, angles_diff_A2B
     
-    def update_angles_diff(self):
+    def update_dist_and_angles(self):
         """
-        计算红方智能体到蓝方智能体的角度差
+        计算红方到蓝方/蓝方到红方的距离、角度以及角度差
         """
-        # 计算红方智能体到蓝方智能体的方向向量
-        delta_red2blue = self.blue_positions[np.newaxis, :, :] - self.red_positions[:, np.newaxis, :]   # nred x nblue x 2
-
-        # 计算红方智能体到蓝方智能体的角度
-        angles_red2blue = np.arctan2(delta_red2blue[:, :, 1], delta_red2blue[:, :, 0])                  # nred x nblue
-
-        # 计算红方智能体当前方向与到蓝方智能体的方向的角度差
-        angles_diff_red2blue = angles_red2blue - self.red_directions[:, np.newaxis]                     # nred x nblue
-        angles_diff_red2blue = (angles_diff_red2blue + np.pi) % (2 * np.pi) - np.pi
-
-        return angles_diff_red2blue
+        self.distances_red2blue, self.angles_red2blue, self.angles_diff_red2blue = self._calculate_dist_and_angles(
+            self.red_positions, self.blue_positions, self.red_directions, self.blue_directions, self.red_alives, self.blue_alives
+        )
+        
+        self.distances_blue2red, self.angles_blue2red, self.angles_diff_blue2red = self._calculate_dist_and_angles(
+            self.blue_positions, self.red_positions, self.blue_directions, self.red_directions, self.blue_alives, self.red_alives
+        )
+        
+        self.distances_red2red, self.angles_red2red, self.angles_diff_red2red = self._calculate_dist_and_angles(
+            self.red_positions, self.red_positions, self.red_directions, self.red_directions, self.red_alives, self.red_alives, is_same=True
+        )
+        
+        self.distances_blue2blue, self.angles_blue2blue, self.angles_diff_blue2blue = self._calculate_dist_and_angles(
+            self.blue_positions, self.blue_positions, self.blue_directions, self.blue_directions, self.blue_alives, self.blue_alives, is_same=True
+        )
             
     def get_obs_size(self):
         """
@@ -974,12 +967,9 @@ class BaseEnv():
         """
         # 更新所有红方智能体观察到的盟友和敌人
         self.observed_allies, self.distance_observed_allies = self.update_observed_entities(
-            self.red_positions, self.red_alives, self.max_observed_allies)
+            self.distances_red2red, self.max_observed_allies)
         self.observed_enemies, self.distance_observed_enemies = self.update_observed_entities(
-            self.blue_positions, self.blue_alives, self.max_observed_enemies)
-        
-        # 更新红方智能体与蓝方智能体之间的角度差
-        self.angles_diff_red2blue = self.update_angles_diff()
+            self.distances_red2blue, self.max_observed_enemies)
 
         # 初始化特征数组
         own_feats = np.zeros((self.n_reds, self.obs_own_feats_size), dtype=np.float32)
@@ -1013,7 +1003,7 @@ class BaseEnv():
         enemy_feats[agent_ids, enemy_indices, 0:2] = (enemy_positions - self.red_positions[agent_ids]) / self.detection_radius
         enemy_feats[agent_ids, enemy_indices, 2] = self.distance_observed_enemies[valid_enemies_mask] / self.detection_radius
         enemy_feats[agent_ids, enemy_indices, 3] = self.blue_directions[enemy_ids] / np.pi
-        enemy_feats[agent_ids, enemy_indices, 4] = self.angles_diff_red2blue[agent_ids, enemy_ids] / (self.attack_angle / 2)
+        enemy_feats[agent_ids, enemy_indices, 4] = self.angles_diff_red2blue[agent_ids, enemy_ids] / np.pi
 
         # 将所有特征合并成一个单一的观测数组
         agents_obs = np.concatenate(
@@ -1024,6 +1014,9 @@ class BaseEnv():
             ),
             axis=1
         )
+
+        # # 将被干扰的智能体的局部观测信息置0
+        # agents_obs[self.red_interfere_damage_mask] = 0.0
 
         obs = [agents_obs[i, :] for i in range(self.n_reds)]
 
@@ -1126,12 +1119,15 @@ class BaseEnv():
         min_vel_mask = self.red_velocities <= self.red_min_vel
 
         # 限制达到最大速度的智能体的加速动作（只能减速或保持）
-        if np.any(max_vel_mask):
-            available_actions[max_vel_mask, self.acc_action_mid_id + 1:] = False
+        available_actions[max_vel_mask, self.acc_action_mid_id + 1:] = False
 
         # 限制达到最小速度的智能体的减速动作（只能加速或保持）
-        if np.any(min_vel_mask):
-            available_actions[min_vel_mask, :self.acc_action_mid_id] = False
+        available_actions[min_vel_mask, :self.acc_action_mid_id] = False
+            
+        # 对于被干扰的智能体，只能保持匀速 (self.acc_action_mid_id 号动作可用)
+        interfere_mask = self.red_interfere_damage_mask
+        available_actions[interfere_mask] = False
+        available_actions[interfere_mask, self.acc_action_mid_id] = True
 
         return available_actions
 
@@ -1147,10 +1143,13 @@ class BaseEnv():
         available_actions = np.ones((self.n_reds, self.heading_action_num), dtype=bool)
 
         # 判断哪些智能体的位置超出缓冲边界
-        out_of_bounds_x = (self.red_positions[:, 0] < -self.half_size_x) | (self.red_positions[:, 0] > self.half_size_x)
-        out_of_bounds_y = (self.red_positions[:, 1] < -self.half_size_y) | (self.red_positions[:, 1] > self.half_size_y)
-        out_of_bounds = out_of_bounds_x | out_of_bounds_y
-
+        out_of_bounds = (
+            (self.red_positions[:, 0] < -self.half_size_x) | 
+            (self.red_positions[:, 0] > self.half_size_x) |
+            (self.red_positions[:, 1] < -self.half_size_y) | 
+            (self.red_positions[:, 1] > self.half_size_y)
+        )
+        
         # 获取超出边界的智能体索引
         out_of_bounds_indices = np.where(out_of_bounds)[0]
 
@@ -1158,48 +1157,39 @@ class BaseEnv():
         if out_of_bounds_indices.size == 0:
             return available_actions
 
-        # 计算超出边界的智能体到每个边界线段的向量
-        pos_vec = self.red_positions[out_of_bounds_indices, np.newaxis, :] - self.cache_bounds[:, 0, :]
+        # 计算超出边界的智能体到每个边界线段的向量和投影点
+        pos_vec = self.red_positions[out_of_bounds_indices, np.newaxis, :] - self.cache_bounds[:, 0, :] # 投影向量
+        pos_unitvec = pos_vec / self.bounds_len[:, np.newaxis]  # 单位投影向量
+        t = np.clip(np.einsum('nij,ij->ni', pos_unitvec, self.bounds_unitvec), 0.0, 1.0)    # 投影比例
+        nearest = self.cache_bounds[:, 0, :] + t[:, :, np.newaxis] * self.bounds_vec[np.newaxis, :, :]  # 投影点
 
-        # 计算向量的单位向量
-        pos_unitvec = pos_vec / self.bounds_len[:, np.newaxis]
-
-        # 计算智能体位置在每条线段上的投影比例
-        t = np.einsum('nij,ij->ni', pos_unitvec, self.bounds_unitvec)
-
-        # 将 t 限制在 [0, 1] 范围内，确保投影点在线段上
-        t = np.clip(t, 0.0, 1.0)
-
-        # 计算每条线段上距离智能体最近的点的坐标
-        nearest = self.cache_bounds[:, 0, :] + t[:, :, np.newaxis] * self.bounds_vec[np.newaxis, :, :]
-
-        # 计算智能体当前位置到最近点的距离
+        # 计算智能体当前位置到最近点的距离和最近线段的索引
         nearest_dist = np.linalg.norm(self.red_positions[out_of_bounds_indices, np.newaxis, :] - nearest, axis=2)
-
-        # 找到每个智能体距离最近的线段的索引
         nearest_id = np.argmin(nearest_dist, axis=1)
 
         # 获取每个智能体最近的目标点
         nearest_target = nearest[np.arange(out_of_bounds_indices.size), nearest_id]
 
-        # 计算智能体的期望方向
+        # 计算智能体的期望方向和角度差
         desired_directions = np.arctan2(nearest_target[:, 1] - self.red_positions[out_of_bounds_indices, 1],
                                         nearest_target[:, 0] - self.red_positions[out_of_bounds_indices, 0])
-        
-        # 计算当前方向到期望方向的角度差
         angles_diff = (desired_directions - self.red_directions[out_of_bounds_indices] + np.pi) % (2 * np.pi) - np.pi
-        angles_diff_threshold = self.max_angular_vel * self.dt_time
 
-        # 如果角度差大于阈值，限制只能选择右转动作（负号表示逆时针）
-        mask_pos = angles_diff >= angles_diff_threshold
+        # 计算动作限制限，限制智能体的左转和右转
+        # 1.如果角度差大于阈值，限制只能选择右转动作（负号表示逆时针）
+        mask_pos = angles_diff >= self.max_turn
         available_actions[out_of_bounds_indices[mask_pos], :self.heading_action_mid_id + 1] = False
 
-        # 如果角度差小于负的阈值，限制只能选择左转动作（正号表示顺时针）
-        mask_neg = angles_diff <= -angles_diff_threshold
+        # 2.如果角度差小于负的阈值，限制只能选择左转动作（正号表示顺时针）
+        mask_neg = angles_diff <= -self.max_turn
         available_actions[out_of_bounds_indices[mask_neg], self.heading_action_mid_id:] = False
+        
+        # 对于被干扰的智能体，只能保持航向 (self.heading_action_mid_id 号动作可用)
+        interfere_mask = self.red_interfere_damage_mask
+        available_actions[interfere_mask] = False
+        available_actions[interfere_mask, self.heading_action_mid_id] = True
 
         return available_actions
-
 
     def get_avail_attack_actions(self):
         """
@@ -1209,54 +1199,36 @@ class BaseEnv():
         available_actions: 布尔数组，形状为 (n_reds, attack_action_num)，
                         表示每个红方智能体的各个攻击动作是否可用。
         """
+        # 干扰还未结束的掩码
+        self.red_interfering = (
+            (self.red_interfere_duration > 0) & 
+            (self.red_interfere_duration < self.interfere_duration) & 
+            self.red_interfere_mode_mask &
+            self.red_alives
+        )
+        
         # 初始化有效动作数组
         available_actions = np.ones((self.n_reds, self.attack_action_num), dtype=bool)
+        
+        # 不攻击动作的可用性
+        available_actions[:, 0] = self.get_avail_no_op_actions()
 
-        # 判断自爆动作的可用性
-        available_actions[:, 1] = self.get_avail_explode_action()
-
-        # 判断撞击动作的可用性
+        # 自爆、软杀伤、干扰和碰撞动作的可用性
+        available_actions[:, 1] = (self.get_avail_explode_action() | self.get_avail_softkill_action() | self.get_avail_interfere_action())
         available_actions[:, 2] = self.get_avail_collide_action()
 
-        # 软杀伤动作默认不可用
-        available_actions[:, 3] = False
-
         return available_actions
-
-    def get_avail_collide_action(self):
+    
+    def get_avail_no_op_actions(self):
         """
-        获取红方智能体的可用碰撞动作
+        获取红方智能体不攻击动作的可用性
         
         返回:
         available_actions: 布尔数组，形状为 (n_reds, )，
-                           表示每个智能体的碰撞动作是否可用
+                           表示每个智能体的不攻击动作是否可用
         """
-        
-        # 获取红方智能体与蓝方智能体的角度差
-        angles_red2blue, angles_diff_red2blue = self.get_angles_diff() #(nreds, nblues)
-        
-        # 获取红方智能体到蓝方智能体的距离
-        distances_red2blue = self.get_dist()
-        
-        # 判断蓝方智能体是否在红方攻击范围内
-        blue_in_attack_zone = (distances_red2blue < self.attack_radius) & (
-            np.abs(angles_diff_red2blue) < self.attack_angle/2) # (n_reds, nblues)
-        
-        # 将不在攻击范围内的智能体距离设置为无限大
-        distances_red2blue[~blue_in_attack_zone] = np.inf
-        
-        # 找个每个红方智能体最近的蓝方智能体
-        nearest_blue_id = np.argmin(distances_red2blue, axis=1)
-        
-        # 如果红方智能体没有攻击范围内的蓝方智能体，目标设为1
-        nearest_blue_id[np.all(np.isinf(distances_red2blue), axis=1)] = -1
-        
-        # 获取红方智能体的目标索引
-        red_targets = nearest_blue_id
-
-        available_actions = (red_targets != -1)
-
-        return available_actions
+        # 干扰中的智能体无法选择不攻击动作
+        return ~self.red_interfering
 
     def get_avail_explode_action(self):
         """
@@ -1266,38 +1238,100 @@ class BaseEnv():
         available_actions: 布尔数组，形状为 (n_reds, )，
                            表示每个智能体的自爆动作是否可用
         """
-        # 计算每个红方智能体与每个蓝方智能体之间的距离
-        distances_red2blue = self.get_dist()
-        
         # 红方智能体自爆范围内的蓝方智能体
-        blue_in_red_explode_zone = distances_red2blue < self.can_explode_radius # (nr, nb)
+        blue_in_red_explode_zone = self.distances_red2blue < self.can_explode_radius
 
-        # distances_red2blue里面已经过滤掉了死亡的智能体
-        available_actions = np.any(blue_in_red_explode_zone, axis=1)
+        # 判断自爆动作的可用性
+        available_actions = np.any(blue_in_red_explode_zone, axis=1) & self.red_explode_mode_mask
+        
+        # 被干扰的智能体不能自爆
+        available_actions[self.red_interfere_damage_mask] = False
 
         return available_actions
     
-    def random_policy_red(self):
+    def get_avail_softkill_action(self):
         """
-        为红方智能体生成随机策略，包括加速、航向和攻击动作。
-
+        获取红方智能体可用的软杀伤动作
+        
+        返回：
+        available_actions: 布尔数组，形状为 (n_reds, )，
+                           表示每个智能体的软杀伤动作是否可用
+        """
+        # 红方智能体软杀伤范围内的蓝方智能体
+        blue_in_red_softkill_zone = self.distances_red2blue < self.can_softkill_radius
+        
+        # 判断软杀伤动作的可用性
+        available_actions = np.any(blue_in_red_softkill_zone, axis=1) & self.red_softkill_mode_mask & (self.red_softkill_time < self.softkill_time)
+        
+        # 被干扰的智能体不能软杀伤
+        available_actions[self.red_interfere_damage_mask] = False
+        
+        return available_actions
+    
+    def get_avail_interfere_action(self):
+        """
+        获取红方智能体可用的干扰动作
+        
+        返回：
+        availables_actions: 布尔数组，形状为 (n_reds, )，表示每个智能体的干扰动作是否可用
+        """
+        # 红方智能体干扰范围附近的蓝方智能体
+        blue_near_red_interfere_zone = (
+            (self.distances_red2blue < self.can_interfere_radius) &
+            (np.abs(self.angles_diff_red2blue) < self.can_interfere_angle / 2)
+        )
+        
+        # 判断干扰动作的可用性 (干扰中的智能体仍然可以进行干扰动作)
+        available_actions = (
+            (
+                np.any(blue_near_red_interfere_zone, axis=1) & 
+                self.red_interfere_mode_mask & 
+                (self.red_interfere_duration < self.interfere_duration)
+            ) | self.red_interfering
+        )
+        
+        return available_actions
+        
+    def get_avail_collide_action(self):
+        """
+        获取红方智能体的可用碰撞动作
+        
         返回:
-        actions: 动作数组，形状为 (n_reds, 3)，每行包含一个智能体的加速、航向和攻击动作。
+        available_actions: 布尔数组，形状为 (n_reds, )，
+                           表示每个智能体的碰撞动作是否可用
         """
-        # 随机选择加速动作
-        acc_action = np.random.randint(0, self.acc_action_num, size=self.n_reds)
-
-        # 随机选择航向动作
-        heading_action = np.random.randint(0, self.heading_action_num, size=self.n_reds)
-
-        # 按概率随机选择攻击动作
-        attack_probabilities = np.array([0.9, 0.02, 0.08, 0])  # 攻击动作的概率分布
-        attack_action = np.random.choice(np.arange(self.attack_action_num), size=self.n_reds, p=attack_probabilities)
-
-        # 将加速、航向和攻击动作组合成一个动作数组
-        actions = np.column_stack((acc_action, heading_action, attack_action))
-
-        return actions
+        # 判断蓝方智能体是否在红方智能体允许的撞击范围内
+        blue_near_red_collide_zone = (
+            (self.distances_red2blue < self.can_collide_radius) &
+            (np.abs(self.angles_diff_red2blue) < self.collide_angle / 2)
+        )
+        
+        # 将不在攻击范围内的智能体距离设置为无限大
+        distances_red2blue = self.distances_red2blue.copy()
+        distances_red2blue[~blue_near_red_collide_zone] = np.inf
+        
+        # 找个每个红方智能体最近的蓝方智能体
+        nearest_blue_id = np.argmin(distances_red2blue, axis=1)
+        
+        # 如果红方智能体没有攻击范围内的蓝方智能体，目标设为-1
+        nearest_blue_id[np.all(np.isinf(distances_red2blue), axis=1)] = -1
+        
+        # 获取红方智能体的目标索引
+        self.red_collide_targets = nearest_blue_id
+        
+        # 判断可用的撞击动作
+        available_actions = (self.red_collide_targets != -1)
+        
+        # 对于(被)干扰还未结束的智能体，不能进行碰撞
+        available_actions[self.red_interfering] = False
+        available_actions[self.red_interfere_damage_mask] = False
+        
+        # 对于还没有使用软杀伤或者干扰的智能体，不能碰撞
+        no_softkill_mask = self.red_softkill_mode_mask & (self.red_softkill_time == 0)
+        no_interfere_mask = self.red_interfere_mode_mask & (self.red_interfere_duration == 0)
+        available_actions[no_softkill_mask | no_interfere_mask] = False
+        
+        return available_actions
     
     def transform_position(self, position):
         """
@@ -1315,17 +1349,25 @@ class BaseEnv():
         
         return transformed_position
     
-    def transform_positions(self):
+    def transform_positions(self, positions):
         """
         将所有世界坐标转换为屏幕坐标。
 
         返回:
         transformed_positions: 屏幕坐标中的所有点，形状为 (n, 2)。
         """
-        # 只转换存活的智能体坐标
-        alive_mask = np.hstack((self.red_alives, self.blue_alives))
-        # 转换所有世界坐标到屏幕坐标
-        self.transformed_positions[alive_mask] = ((self.positions[alive_mask] - self.screen_offset) * self.direction_scale * self.scale_factor).astype(int)
+        transformed_positions = ((positions - self.screen_offset) * self.direction_scale * self.scale_factor).astype(int)
+        
+        return transformed_positions
+    
+    def update_transformed_positions(self):
+        """
+        将所有智能体的坐标转成屏幕坐标
+        """
+        red_transformed_positions = self.transform_positions(self.red_positions)
+        blue_transformed_positions = self.transform_positions(self.blue_positions)
+        
+        self.transformed_positions = np.vstack([red_transformed_positions, blue_transformed_positions])
         
     def close(self):
         """
@@ -1370,7 +1412,7 @@ class BaseEnv():
         
     def _save_data_to_csv(self):
         # 轨迹数据保存数据
-        save_dir = f'./result/data/{self.scenario_name}/{self.map_name}/{self.timestamp}'
+        save_dir = os.path.join(self.directory, f'result/data/{self.scenario_name}/{self.map_name}/{self.timestamp}')
         os.makedirs(save_dir)
         
         filename = os.path.join(save_dir, f'{self.scenario_name}_data_{self.timestamp}.csv')
@@ -1378,34 +1420,67 @@ class BaseEnv():
         
         # 打印文件存储路径
         print(f"轨迹数据: {filename}")
-            
-    def render_explode(self):
+
+    def render_explode_softkill_interfere(self):
         """
-        渲染红方和蓝方智能体的爆炸特效，包括自爆和被爆效果。
-        """
-        red_color = (255, 0, 0)
-        blue_color = (0, 0, 225)
+        1. 渲染红方和蓝方智能体的爆炸特效，包括自爆和被爆效果。
+        2. 渲染红方和蓝方智能体的软杀伤特效，包括开启软杀伤和被软杀伤的效果
         
-        # 处理红方智能体的爆炸效果
+        """
+        
+        red_color_explode = (255, 0, 0)
+        blue_color_explode = (0, 0, 255)
+        
+        red_color_softkill = (255, 0, 0)
+        blue_color_softkill = (0, 0, 255)
+        
+        red_color_interfere = (255, 0, 0)
+        blue_color_interfere = (0, 0, 255)
+        
+        # red_color_softkill = (0, 0, 0)  # 黑色
+        # blue_color_softkill = (255, 255, 0)    # 黄色
+        
+        # red_color_interfere = (240, 128, 128)
+        # blue_color_interfere = (173, 216, 230)
+        
+        # 处理红方智能体的攻击/被攻击效果
         for i in range(self.n_reds):
-            self._render_explosion(i, red_color, self.red_self_destruction_mask[i], self.red_explode_mask[i],
-                                    self.red_self_destruction_render, self.red_explosion_frames_remaining)
+            # 渲染自爆/被爆
+            self._render_explosion(i, red_color_explode, self.red_explode_mask[i], self.red_explode_damage_mask[i],
+                                        self.red_explode_render, self.red_explosion_frames_remaining)
+
+            # 渲染软杀伤/被软杀伤
+            self._render_softkill(i, red_color_softkill, self.red_softkill_mask[i], self.red_softkill_damage_mask[i],
+                                       self.red_softkill_render, self.red_softkill_frames_ramaining)
+            
+            # 渲染干扰
+            self._render_interfere(red_color_interfere, self.red_interfere_mask[i], self.transformed_positions[i],
+                                       self.red_directions[i])
         
-        # 处理蓝方智能体的爆炸效果
+        # 处理蓝方智能体的攻击/被攻击效果
         for i in range(self.n_blues):
-            self._render_explosion(i, blue_color, self.blue_self_destruction_mask[i], self.blue_explode_mask[i],
-                                    self.blue_self_destruction_render, self.blue_explosion_frames_remaining, is_blue=True)
+            # 渲染自爆/被爆
+            self._render_explosion(i, blue_color_explode, self.blue_explode_mask[i], self.blue_explode_damage_mask[i],
+                                        self.blue_explode_render, self.blue_explosion_frames_remaining, is_blue=True) 
+            
+            # 渲染软杀伤/被软杀伤
+            self._render_softkill(i, blue_color_softkill, self.blue_softkill_mask[i], self.blue_softkill_damage_mask[i],
+                                      self.blue_softkill_render, self.blue_softkill_frames_remaining, is_blue=True)
+                
+            # 渲染干扰
+            self._render_interfere(blue_color_interfere, self.blue_interfere_mask[i], self.transformed_positions[i+self.n_reds],
+                                       self.blue_directions[i])
         
-    def _render_explosion(self, index, color, self_destruction_mask, explode_mask, self_destruction_render, explosion_frames_remaining, is_blue=False):
+    def _render_explosion(self, index, color, explode_mask, explode_damage_mask, explode_render, explosion_frames_remaining, is_blue=False):
         """
         处理单个智能体的爆炸效果，包括自爆和被爆效果。
         
         参数:
         index: 智能体的索引
         color: 智能体的颜色
-        self_destruction_mask: 自爆掩码
-        explode_mask: 被爆掩码
-        self_destruction_render: 自爆渲染标志
+        explode_mask: 自爆掩码
+        explode_damage_mask: 被爆掩码
+        explode_render: 自爆渲染标志
         explosion_frames_remaining: 爆炸剩余帧数
         is_blue: 是否为蓝方，默认为False。
         """
@@ -1413,29 +1488,85 @@ class BaseEnv():
         offset = self.n_reds if is_blue else 0
         
         # 自爆处理
-        if self_destruction_mask:
+        if explode_mask:
             # 设置自爆渲染标志
-            self_destruction_render[index] = True
+            explode_render[index] = True
             # 初始化自爆需要渲染的帧数
             explosion_frames_remaining[index] = self.explode_render_frames
             
         # 被爆处理
-        if explode_mask:
+        if explode_damage_mask:
             # 初始化被爆需要渲染的帧数
             explosion_frames_remaining[index] = self.explode_render_frames
             
         # 渲染爆炸效果
         if explosion_frames_remaining[index] > 0:
             # 渲染自爆范围
-            if self_destruction_render[index]:
-                pygame.draw.circle(self.screen, color, self.transformed_positions[index+offset], radius=self.explode_radius, width=2)
+            if explode_render[index]:
+                pygame.draw.circle(self.screen, color, self.transformed_positions[index+offset], radius=self.screen_explode_radius, width=2)
                 
             # 渲染爆炸痕迹
             pygame.draw.circle(self.screen, color, self.transformed_positions[index+offset], radius=5)
             
             # 更新剩余帧数
             explosion_frames_remaining[index] -= 1
+    
+    def _render_softkill(self, index, color, softkill_mask, softkill_damage_mask, softkill_render, softkill_frames_ramining, is_blue=False):
+        """
+        处理单个智能体的软杀伤效果，包括开启软杀伤和被软杀伤
+        
+        参数：
+        index: 智能体的索引
+        color: 智能体的颜色
+        softkill_mask: 开启软杀伤的掩码
+        softkill_damage_mask: 被软杀伤的掩码
+        softkill_rendr: 开启软杀伤的渲染标志
+        softkill_frames_ramining: 软杀伤剩余帧数
+        is_blue: 是否为蓝方，默认为False
+        """
+        offset = self.n_reds if is_blue else 0
+        
+        # 开启软杀伤处理
+        if softkill_mask:
+            # 设置开启软杀伤标志
+            softkill_render[index] = True
+            # 初始化软杀伤需要渲染的帧数
+            softkill_frames_ramining[index] = self.softkill_render_frames
             
+        # 被软杀伤处理
+        if softkill_damage_mask:
+            # 初始化被软杀伤需要渲染的帧数
+            softkill_frames_ramining[index] = self.softkill_render_frames
+            
+        # 渲染软杀伤效果
+        if softkill_frames_ramining[index] > 0:
+            # 渲染软杀伤范围
+            if softkill_render[index]:
+                pygame.draw.circle(self.screen, color, self.softkill_positions[index+offset], radius=self.screen_softkill_radius, width=2)
+            
+            # 渲染软杀伤痕迹
+            pygame.draw.circle(self.screen, color, self.softkill_positions[index+offset], radius=5)
+            
+            # 更新剩余帧数
+            softkill_frames_ramining[index] -= 1
+    
+    def _render_interfere(self, color, interfere_mask, position, direction):
+        """
+        处理单个智能体的干扰效果，主要包括开启干扰的效果
+        
+        参数：
+        color: 智能体的颜色
+        interfere_mask: 开启干扰的掩码
+        position: 屏幕位置 
+        """
+        # 渲染开启干扰的效果
+        if interfere_mask:
+            # 计算干扰区域的起始和结束角度
+            start_angle = direction - self.interfere_angle / 2
+            end_angle = direction + self.interfere_angle / 2
+            # 渲染软杀伤的扇形区域
+            draw_sector(self.screen, position, self.screen_interfere_radius, start_angle, end_angle, color)
+    
     def render_collide(self):
         """
         渲染红方和蓝方智能体的碰撞特效，包括撞击位置和碰撞效果。        
@@ -1491,70 +1622,19 @@ class BaseEnv():
         # 绘制碰撞箭头
         draw_arrow(self.screen, start_pos, end_pos, color=agent_color)
 
-    def render_soft_kill(self):
+    def render_threat(self):
         """
-        渲染于红方和蓝方智能体的软杀伤特效
+        渲染红方和蓝方智能体在威胁区域内被毁伤的特效
         """
-        red_color = (255, 0, 0)
-        blue_color = (0, 0, 255)
+        mask = np.hstack((self.red_threat_damage_mask, self.blue_threat_damage_mask))
+        self.threat_frames_ramaining[mask] = self.threat_render_frames
         
-        # 渲染红方智能体的软杀伤效果
-        for i in range(self.n_reds):
-            self._render_soft_kill(
-                i,
-                self.red_soft_kill_mask,
-                self.red_soft_kill_frames_remaining,
-                red_color,
-                is_red=True
-            )
-        
-        # 渲染蓝方智能体的软杀伤效果
-        for i in range(self.n_blues):
-            self._render_soft_kill(
-                i,
-                self.blue_soft_kill_mask,
-                self.blue_soft_kill_frames_remaining,
-                blue_color,
-                is_red=False
-            )
-        
-    def _render_soft_kill(self, index, soft_kill_mask, frames_remaining, color, is_red=False):
-        """
-        渲染单个智能体的软杀伤特效。
-        
-        参数：
-        index: 智能体的索引
-        soft_kill_mask: 软杀伤的掩码数组
-        frames_remaining: 剩余渲染帧数组
-        color: 渲染的颜色
-        is_red: 是否为红方
-        """
-        
-        offset = 0 if is_red else self.n_reds
-        
-        # 处理软杀伤的逻辑
-        if soft_kill_mask[index]:
-            if is_red:
-                frames_remaining[index] = self.soft_kill_max_time
-            else:
-                frames_remaining[index] = self.explode_render_frames
-                self.soft_kill_transformed_positions[index+offset] = self.transformed_positions[index + offset]
-        
-        # 渲染软杀伤的效果
-        if frames_remaining[index] > 0:
-            if is_red and self.red_alives[index]:
-                start_angle = self.red_directions[index] - self.soft_kill_angle / 2
-                end_angle = self.red_directions[index] + self.soft_kill_angle / 2
-                
-                # 渲染扇形
-                draw_sector(self.screen, self.transformed_positions[index], self.soft_kill_distance, start_angle, end_angle, color)
-            else:
-                # 渲染位置
-                pygame.draw.circle(self.screen, color, self.soft_kill_transformed_positions[index+offset], radius=5)
-            
-            # 更新渲染的帧数
-            frames_remaining[index] -= 1
-            
+        for i in range(self.n_agents):
+            if self.threat_frames_ramaining[i] > 0:
+                color = (255, 0, 0) if i < self.n_reds else (0, 0, 255)
+                pygame.draw.circle(self.screen, color, self.transformed_positions[i], radius=5)
+                self.threat_frames_ramaining[i] -= 1
+    
     def render(self, mode='human'):
         """
         使用 Pygame 渲染环境和智能体的状态
@@ -1600,6 +1680,9 @@ class BaseEnv():
         
         # 初始化字体
         self.font = pygame.font.SysFont(None, 36)
+        
+        # 初始化渲染参数
+        self._reset_render_params()
 
         # 创建帧保存目录
         self.frame_dir = os.path.join(self.directory, f'result/frames/{self.scenario_name}/{self.map_name}/{self.timestamp}')
@@ -1614,7 +1697,7 @@ class BaseEnv():
         blue_plane_img = pygame.image.load(f"{self.directory}/png/blue_plane_s.png").convert_alpha()
         
         # 缩放飞机贴图
-        scale_factor = 0.2
+        scale_factor = 0.15
         self.red_plane_img = pygame.transform.scale(red_plane_img, (
             int(red_plane_img.get_width() * scale_factor),
             int(red_plane_img.get_height() * scale_factor)
@@ -1642,11 +1725,14 @@ class BaseEnv():
         渲染红方和蓝方的智能体（飞机）。
         """
         # 处理位置和角度变换
-        self.transform_positions()
-        angles = -np.degrees(self.directions)
+        self.update_transformed_positions()
+        directions = np.hstack([self.red_directions, self.blue_directions])
+        alives = np.hstack([self.red_alives, self.blue_alives])
+        
+        angles = -np.degrees(directions)
         
         for i in range(self.n_agents):
-            if self.alives[i]:
+            if alives[i]:
                 image = self.red_plane_img if i < self.n_reds else self.blue_plane_img
                 rotated_img = pygame.transform.rotate(image, -angles[i])
                 new_rect = rotated_img.get_rect(center=self.transformed_positions[i])
@@ -1662,9 +1748,9 @@ class BaseEnv():
         """
         渲染动作效果
         """
-        self.render_explode()
+        self.render_explode_softkill_interfere()
         self.render_collide()
-        self.render_soft_kill()
+        self.render_threat()
         
     def _save_frame(self):
         """
@@ -1672,122 +1758,61 @@ class BaseEnv():
         """
         frame_path = os.path.join(self.frame_dir, f"frame_{self._total_steps:06d}.png")
         pygame.image.save(self.screen, frame_path)
-        current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print(f'[{current_time}] save {frame_path}')
         
-    def scripted_policy_red(self, actions):
-
-        actions = self.script_explode_red(actions)
-        actions = self.script_collide_red(actions)
-        actions = self.script_soft_kill_red(actions) 
-    
-        return actions
-    
-    def script_explode_red(self, actions):
-
-        # 计算红方智能体到蓝方智能体的距离
-        distances_red2blue = distance.cdist(self.red_positions[self.script_explode_ids], self.blue_positions, 'euclidean')
-
-        # 若有蓝方飞机在红方爆炸范围内，则自爆
-        explode_mask = np.any(distances_red2blue <= self.explode_radius, axis=1)
-        actions[self.script_explode_ids[explode_mask], 2] = 1
-
-        if np.any(explode_mask):
-            return actions
-
-        # 创建有效性掩码，只考虑存活的红方和蓝方智能体之间的距离
-        valid_mask = self.red_alives[self.script_explode_ids, np.newaxis] & self.blue_alives[np.newaxis, :]
-
-        # 将无效的距离设置为无限大
-        distances_red2blue = np.where(valid_mask, distances_red2blue, np.inf)
-
-        # 找到每个红方智能体最近的蓝方智能体
-        nearest_blue_id = np.argmin(distances_red2blue, axis=1)
-
-        # 如果没有蓝方智能体存活，目标设为-1
-        nearest_blue_id[np.all(np.isinf(distances_red2blue), axis=1)] = -1
-
-        # 更新红方智能体的目标
-        red_targets = nearest_blue_id
-
-        # 计算智能体的期望方向
-        desired_directions = np.arctan2(self.blue_positions[red_targets, 1] - self.red_positions[self.script_explode_ids, 1],
-                                        self.blue_positions[red_targets, 0] - self.red_positions[self.script_explode_ids, 0])    # (n)
+        if self.debug:
+            current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            print(f'[{current_time}] save {frame_path}')
         
-        # 计算当前方向到期望方向的角度
-        angles_diff = desired_directions - self.red_directions[self.script_explode_ids] # (n)
-        angles_diff = (angles_diff + np.pi) % (2 * np.pi) - np.pi
-        angles_diff_threshold = self.max_angular_vel * self.dt_time
-
-        # 如果角度差大于angles_diff_threshold, 则只用-1, -2号动作
-        mask_neg = angles_diff <= -angles_diff_threshold
-        actions[self.script_explode_ids[mask_neg], 1] = -2
-
-        # 如果角度差小于-angles_diff_threshold，则只用0, 1号动作
-        mask_pos = angles_diff >= angles_diff_threshold
-        actions[self.script_explode_ids[mask_pos], 1] = 2
-
-        return actions
-    
-    def script_collide_red(self, actions):
-        # 计算红方智能体到蓝方智能体的距离
-        distances_red2blue = distance.cdist(self.red_positions[self.script_collide_ids], self.blue_positions, 'euclidean')
-
-        # 若有蓝方飞机在红方撞击范围内，则撞击
-        collide_mask = np.any(distances_red2blue <= self.attack_radius, axis=1)
-        actions[self.script_collide_ids[collide_mask], 2] = 2
-
-        if np.any(collide_mask):
-            return actions
-
-        # 创建有效性掩码，只考虑存活的红方和蓝方智能体之间的距离
-        valid_mask = self.red_alives[self.script_collide_ids, np.newaxis] & self.blue_alives[np.newaxis, :]
-
-        # 将无效的距离设置为无限大
-        distances_red2blue = np.where(valid_mask, distances_red2blue, np.inf)
-
-        # 找到每个红方智能体最近的蓝方智能体
-        nearest_blue_id = np.argmin(distances_red2blue, axis=1)
-
-        # 如果没有蓝方智能体存活，目标设为-1
-        nearest_blue_id[np.all(np.isinf(distances_red2blue), axis=1)] = -1
-
-        # 更新红方智能体的目标
-        red_targets = nearest_blue_id
-
-        # 计算智能体的期望方向
-        desired_directions = np.arctan2(self.blue_positions[red_targets, 1] - self.red_positions[self.script_collide_ids, 1],
-                                        self.blue_positions[red_targets, 0] - self.red_positions[self.script_collide_ids, 0])    # (n)
+    def red_random_policy(self, available_actions):
+        """
+        基于可用动作生成红方智能体的随机策略。
         
-        # 计算当前方向到期望方向的角度
-        angles_diff = desired_directions - self.red_directions[self.script_collide_ids] # (n)
-        angles_diff = (angles_diff + np.pi) % (2 * np.pi) - np.pi
-        angles_diff_threshold = self.max_angular_vel * self.dt_time
+        参数:
+        available_actions: 布尔数组，形状为 (n_reds, total_action_num)，表示每个智能体的各个动作是否可用。
 
-        # 如果角度差大于angles_diff_threshold, 则只用-1, -2号动作
-        mask_neg = angles_diff <= -angles_diff_threshold
-        actions[self.script_collide_ids[mask_neg], 1] = -2
+        返回:
+        actions: 整数数组，形状为 (n_reds, 3)，表示每个智能体的加速、航向和攻击动作。
+        """
+        available_actions = np.array(available_actions)
+        
+        acc_avail_actions = available_actions[:, :self.acc_action_num]
+        heading_avail_actions = available_actions[:, self.acc_action_num:self.acc_action_num + self.heading_action_num]
+        attack_avail_actions = available_actions[:, self.acc_action_num + self.heading_action_num:]
 
-        # 如果角度差小于-angles_diff_threshold，则只用0, 1号动作
-        mask_pos = angles_diff >= angles_diff_threshold
-        actions[self.script_collide_ids[mask_pos], 1] = 2
+        # 随机选择加速动作
+        acc_actions = np.array([np.random.choice(np.where(acc)[0]) for acc in acc_avail_actions])
+
+        # 随机选择航向动作
+        heading_actions = np.array([np.random.choice(np.where(heading)[0]) for heading in heading_avail_actions])
+
+        # 随机选择攻击动作
+        attack_actions = np.array([np.random.choice(np.where(attack)[0]) for attack in attack_avail_actions])
+
+        # 将动作组合成完整的行动列表
+        actions = np.column_stack((acc_actions, heading_actions, attack_actions))
 
         return actions
 
-    def script_soft_kill_red(self, actions):
+    
+    def random_policy_red(self):
+        """
+        为红方智能体生成随机策略，包括加速、航向和攻击动作。
 
-        # 计算红方智能体软杀伤范围内的蓝方智能体
-        distances_red2blue = distance.cdist(self.red_positions[self.script_soft_kill_ids], self.blue_positions, 'euclidean')
-        angles_red2blue = self.update_angles_diff()
+        返回:
+        actions: 动作数组，形状为 (n_reds, 3)，每行包含一个智能体的加速、航向和攻击动作。
+        """
+        # 随机选择加速动作
+        acc_action = np.random.randint(0, self.acc_action_num, size=self.n_reds)
 
-        blue_in_soft_kill_zone = (distances_red2blue <= self.soft_kill_distance) & (angles_red2blue[self.script_soft_kill_ids] <= self.soft_kill_angle / 2)
+        # 随机选择航向动作
+        heading_action = np.random.randint(0, self.heading_action_num, size=self.n_reds)
 
-        # 若有蓝方飞机在红方软杀伤范围内，并且红方智能体开启软杀伤次数未达到上限，则执行软杀伤
-        soft_kill_mask = np.any(blue_in_soft_kill_zone, axis=1) & (self.red_soft_kill_num[self.script_soft_kill_ids] < self.soft_kill_max_num)
-        actions[self.script_soft_kill_ids[soft_kill_mask], 2] = 3
+        # 按概率随机选择攻击动作
+        attack_probabilities = np.array([0.9, 0.02, 0.08, 0])  # 攻击动作的概率分布
+        attack_action = np.random.choice(np.arange(self.attack_action_num), size=self.n_reds, p=attack_probabilities)
 
-        if np.any(soft_kill_mask):
-            return actions
+        # 将加速、航向和攻击动作组合成一个动作数组
+        actions = np.column_stack((acc_action, heading_action, attack_action))
 
         return actions
     
@@ -1827,73 +1852,3 @@ class BaseEnv():
 
             # 将数据追加到 agent_data 列表中
             self.sim_data.append(data)
-   
-def draw_arrow(screen, start_pos, end_pos, color):
-    """
-    在屏幕上绘制从 start_pos 指向 end_pos 的箭头
-    
-    参数:
-    screen: pygame 显示的屏幕。
-    start_pos: 箭头的起始位置 (x,y)。
-    end_pos: 箭头的终点位置 (x, y)。
-    color: 箭头的颜色
-    """
-    width = 3 # 箭头线条宽度
-    arrow_length = 10  # 箭头三角形的边长
-    arrow_angle = math.pi / 6   # 箭头三角形的角度
-
-    # 计算箭头的角度
-    angle = math.atan2(end_pos[1] - start_pos[1], end_pos[0] - start_pos[0])
-    
-    # 计算箭头三角形的顶点位置
-    arrow_points = [
-        end_pos,
-        (
-            end_pos[0] - arrow_length * math.cos(angle - arrow_angle),
-            end_pos[1] - arrow_length * math.sin(angle - arrow_angle)
-        ),
-        (
-            end_pos[0] - arrow_length * math.cos(angle + arrow_angle),
-            end_pos[1] - arrow_length * math.sin(angle + arrow_angle)
-        )
-    ]
-
-    # 画箭头主线条
-    pygame.draw.line(screen, color, start_pos, end_pos, width)
-
-    # 画箭头的三角形部分
-    pygame.draw.polygon(screen, color, arrow_points)
-            
-def draw_sector(screen, center, radius, start_angle, end_angle, color):
-    """
-    在屏幕上绘制一个扇形。
-
-    参数:
-    screen: pygame 显示的屏幕。
-    center: 扇形的中心点坐标 (x, y)。
-    radius: 扇形的半径。
-    start_angle: 扇形的起始角度（弧度制）。
-    end_angle: 扇形的结束角度（弧度制）。
-    color: 扇形的颜色。
-    """
-    
-    # 线条宽度
-    width = 3 
-
-    # 扇形的顶点计算
-    points = [center]
-    angle_range = math.degrees(end_angle - start_angle)
-    steps = max(1, int(angle_range))  # 动态计算步数，确保至少绘制一个点
-    for step in range(steps + 1):
-        angle = start_angle + (end_angle - start_angle) * step / steps
-        x = center[0] + int(radius * math.cos(angle))
-        y = center[1] - int(radius * math.sin(angle))
-        points.append((x, y))
-
-    # 绘制扇形
-    pygame.draw.polygon(screen, color, points)
-
-    # 绘制边框（弧形和边线）
-    pygame.draw.arc(screen, color, (center[0] - radius, center[1] - radius, radius * 2, radius * 2), start_angle, end_angle, width=width)
-    pygame.draw.line(screen, color, center, points[1], width=width)
-    pygame.draw.line(screen, color, center, points[-1], width=width)

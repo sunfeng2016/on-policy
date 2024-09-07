@@ -375,7 +375,7 @@ class ScoutEnv(BaseEnv):
         
         # 如果需要保存仿真数据，则记录红方的动作信息
         if self.save_sim_data:
-            self.red_action = np.stack([at, pt * self.max_angular_vel * self.dt_time * 180 / np.pi, attack_t], axis=-1)
+            self.red_action = np.stack([at, pt * self.max_turn * 180 / np.pi, attack_t], axis=-1)
         
         # 更新侦察
         self.update_scout()
@@ -433,7 +433,6 @@ class ScoutEnv(BaseEnv):
             'invalid_explode_ratio': self.invalid_explode_red_total / self.n_reds, # 红方无效自爆的比例
             'collide_ratio': self.collide_blue_total / self.n_reds,   # 红方主动撞击的比例
             'be_collided_ratio': self.collide_red_total / self.n_reds, # 红方被撞击的比例
-            'soft_kill_ratio': self.soft_kill_blue_total / self.n_reds,   # 红方软杀伤的比例
             'kill_num': self.explode_blue_total + self.collide_blue_total, # 红方毁伤蓝方的总数
             'hit_core_num': 0, # 高价值区域被打击的次数
             'explode_ratio_blue': self.blue_self_destruction_total / self.n_blues, # 蓝方主动自爆的比例
@@ -526,7 +525,7 @@ class ScoutEnv(BaseEnv):
         
         # 计算当前方向到期望方向的角度差
         angles_diff = (desired_directions - self.red_directions[out_of_bounds_indices] + np.pi) % (2 * np.pi) - np.pi # (n)
-        angles_diff_threshold = self.max_angular_vel * self.dt_time
+        angles_diff_threshold = self.max_turn
 
         # 根据角度差限制有效航向动作
         mask_pos = angles_diff >= angles_diff_threshold
@@ -576,7 +575,7 @@ class ScoutEnv(BaseEnv):
         
         # 计算当前方向到期望方向的角度差
         angles_diff = (desired_directions - self.red_directions[near_threat_agent_id] + np.pi) % (2 * np.pi) - np.pi
-        angles_diff_threshold = self.max_angular_vel * self.dt_time
+        angles_diff_threshold = self.max_turn
         
         # 根据角度差限制有效动作航向
         mask_pos = angles_diff >= angles_diff_threshold
@@ -754,7 +753,7 @@ class ScoutEnv(BaseEnv):
         angles_diff = (desired_directions - self.blue_directions + np.pi) % (2 * np.pi) - np.pi
 
         # 限制转向角度在最大角速度范围内
-        angles_diff = np.clip(angles_diff, -self.max_angular_vel * self.dt_time, self.max_angular_vel * self.dt_time)
+        angles_diff = np.clip(angles_diff, -self.max_turn, self.max_turn)
 
         # 更新蓝方智能体的方向，并限制未在防守范围内的智能体的移动
         self.blue_directions[~in_core_range] += angles_diff[~in_core_range]
@@ -808,7 +807,7 @@ class ScoutEnv(BaseEnv):
         angles_diff = (desired_directions - self.blue_directions[out_of_bounds_indices] + np.pi) % (2 * np.pi) - np.pi # (n)
 
         # 确保转向角度不超过最大角速度
-        angles_diff = np.clip(angles_diff, -self.max_angular_vel * self.dt_time, self.max_angular_vel * self.dt_time)
+        angles_diff = np.clip(angles_diff, -self.max_turn, self.max_turn)
 
         # 根性出界智能体的方向
         self.blue_directions[out_of_bounds_indices] += angles_diff
@@ -841,15 +840,6 @@ class ScoutEnv(BaseEnv):
         # 7.更新蓝方智能体的方向和位置
         self._update_blue_position_and_direction(pt)
         
-    def _apply_soft_kill(self, pt):
-        """
-        如果蓝方智能体在某个红方智能体的软杀伤范围内，则航向不变。
-        """
-        blue_soft_kill_mask = np.any(self.blue_in_soft_kill_time > 0, axis=0)
-        pt[blue_soft_kill_mask] = 0
-        
-        return pt
-        
     def _update_blue_position_and_direction(self, pt):
         """
         更新蓝方智能体的方向和位置
@@ -859,7 +849,7 @@ class ScoutEnv(BaseEnv):
         
         # 更新方向，确保方向在 [-pi, pi] 范围内
         self.blue_directions[alive_mask] = (
-            (self.blue_directions[alive_mask] + pt[alive_mask] * self.max_angular_vel * self.dt_time + np.pi) \
+            (self.blue_directions[alive_mask] + pt[alive_mask] * self.max_turn + np.pi) \
                 % (2 * np.pi) - np.pi
         )
         
@@ -869,7 +859,7 @@ class ScoutEnv(BaseEnv):
         self.blue_positions[alive_mask] += np.column_stack((dx, dy))
         
         # 存储数据
-        self.blue_action[:, 1] = pt * self.max_angular_vel * self.dt_time
+        self.blue_action[:, 1] = pt * self.max_turn
         
     def get_result(self):
         """
