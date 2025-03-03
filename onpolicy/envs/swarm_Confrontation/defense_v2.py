@@ -9,110 +9,57 @@ import numpy as np
 
 try:
     from onpolicy.envs.swarm_Confrontation.baseEnv import BaseEnv
+    from onpolicy.envs.swarm_Confrontation.utils import assign_target
 except:
     from baseEnv import BaseEnv
+    from utils import assign_target
+
     
 os.environ["SDL_VIDEODRIVER"] = "dummy"
 
-class DefenseEnv(BaseEnv):
+class DefenseV2Env(BaseEnv):
     def __init__(self, args, name=None):
-        super(DefenseEnv, self).__init__(args, name)
+        super(DefenseV2Env, self).__init__(args, name)
 
-        # 定义红方核心区域和基地
-        self.red_core = self._create_circle([2250.0, 0.0], 25.0)
-        self.red_base = self._create_circle([2250.0, 0.0], 1250.0)
-        
-        self.red_base_center = self.red_base['center']
-        self.red_base_radius = self.red_base['radius']
+        # 定义红方核心区域
+        self.red_core_ranges = self._create_red_cores()
+        self.red_core_centers = np.array([d['center'] for d in self.red_core_ranges])
+        self.red_core_radiuses = np.array([d['radius'] for d in self.red_core_ranges])
+        self.red_core_num = len(self.red_core_ranges)
 
-        # 定义红方基地的防线
-        self.red_lines = np.array([
-            [[1366.0,  884.0], [1750.0,  500.0]],
-            [[1750.0,  500.0], [1750.0, -500.0]],
-            [[1750.0, -500.0], [1366.0, -884.0]],
-            [[3134.0,  884.0], [2750.0,  500.0]],
-            [[2750.0,  500.0], [2750.0, -500.0]],
-            [[2750.0, -500.0], [3134.0, -884.0]],
+        # 定义蓝方和红方的边界线
+        self.lines = np.array([
+            [[-1000.0, 2500.0], [-1000.0, -2500.0]],
+            [[ 1000.0, 2500.0], [ 1000.0, -2500.0]],
         ])
-        self._calculate_red_lines_properties()
         
-        # 定义红方的目标区域
-        self.red_target_area = [1750, 2750, -1000, 1000]
-
-        # 定义红方的威胁区域
-        self.red_square_size = 1000.0 / 2
-        self._define_threat_zones()
+        self.red_base = {
+            "size": np.array([3000.0, 4000.0]),
+            "center": np.array([2500.0, 0.0])
+        }
         
-        # 定义蓝方基地
-        self.blue_bases = self._create_blue_bases()
-        
-        # 最大威胁区域停留时间
-        self.max_in_threat_zone_time = 10
-        
-        # 蓝方不同批次智能体出发的时间间隔
-        self.interval = 5
+        self.blue_base = {
+            "size": np.array([3000.0, 4000.0]),
+            "center": np.array([-2500.0, 0.0])
+        }
         
         # 基地的最大攻击次数
-        self.max_attack_core_num = 40
+        self.max_attack_core_num = 15
 
-    def _calculate_red_lines_properties(self):
-        """
-        计算红方防线的向量、长度和单位向量
-        """
-        self.red_lines_vec = self.red_lines[:, 1, :] - self.red_lines[:, 0, :]
-        self.red_lines_len = np.linalg.norm(self.red_lines_vec, axis=1)
-        self.red_lines_unitvec = self.red_lines_vec / self.red_lines_len[:, np.newaxis]
-        
-    def _define_threat_zones(self):
-        """
-        定义红方威胁区域的相关属性。
-        """
-        # 左侧威胁区域的两个扇形边界
-        self.left_sector_pos1 = np.array([1366.0, 884.0])
-        self.left_sector_pos2 = np.array([1366.0, -884.0])
-        
-        # 左侧威胁区域的两个扇形边界对应的弧度
-        self.left_sector_theta1, self.left_sector_theta2 = calculate_sector_theta(
-            self.left_sector_pos1, self.left_sector_pos2, self.red_base['center']
-        )
-        
-        # 左侧威胁区域的右边界
-        self.left_threat_x = self.red_base['center'][0] - self.red_square_size
-
-        # 右侧威胁区域的两个扇形边界
-        self.right_sector_pos1 = np.array([3134.0, -884.0])
-        self.right_sector_pos2 = np.array([3134.0, 884.0])
-        
-        # 右侧威胁区域的两个扇形边界对应的弧度
-        self.right_sector_theta1, self.right_sector_theta2 = calculate_sector_theta(
-            self.right_sector_pos1, self.right_sector_pos2, self.red_base['center']
-        )
-        
-        # 右侧威胁区域的左边界
-        self.right_threat_x = self.red_base['center'][0] + self.red_square_size
-    
     def _create_circle(self, center, radius):
         """
         创建一个圆形区域的字典结构。
         """
         return {'center': np.array(center), 'radius': radius}
         
-    def _create_blue_bases(self):
+    def _create_red_cores(self):
         """
-        创建蓝方基地的字典列表。
+        创建红方基地的字典列表。
         """
-        # return [
-        #     self._create_circle([1500.0,  1500.0], 500.0),  # 上右
-        #     self._create_circle([1500.0, -1500.0], 500.0),  # 下右
-        #     self._create_circle([ 500.0,  1500.0], 500.0),  # 上左
-        #     self._create_circle([ 500.0, -1500.0], 500.0),  # 下左
-        # ]
-        
         return [
-            self._create_circle([1600.0,  1750.0], 600.0),  # 上右
-            self._create_circle([1600.0, -1750.0], 600.0),  # 下右
-            self._create_circle([ 400.0,  1750.0], 600.0),  # 上左
-            self._create_circle([ 400.0, -1750.0], 600.0),  # 下左
+            self._create_circle([1500.0,  1500.0], 25.0), 
+            self._create_circle([3000.0,   500.0], 25.0), 
+            self._create_circle([2000.0, -1500.0], 25.0),
         ]
         
     def distribute_red_agents(self):
@@ -123,11 +70,11 @@ class DefenseEnv(BaseEnv):
         n_in_bases: 分配到基地内部的红方智能体数量。
         n_out_bases: 分配到基地外部的红方智能体数量。
         """
-        n_out_bases = int(self.n_reds * np.random.uniform(0.1, 0.2))
-        n_in_bases = self.n_reds - n_out_bases
+        n_out_bases = int(0.25 * self.n_reds)
+        n_in_bases = np.random.multinomial(self.n_reds - n_out_bases, np.ones(self.red_core_num) / self.red_core_num)
         return n_in_bases, n_out_bases
     
-    def generate_red_positions(self):
+    def generate_red_positions_old(self):
         """
         生成红方智能体的位置和朝向。
         
@@ -138,36 +85,44 @@ class DefenseEnv(BaseEnv):
         # 分配基地内外的智能体数量
         n_in_bases, n_out_bases = self.distribute_red_agents()
         
-        # 基地内部智能体的位置
-        in_base_positions = self._generate_positions_in_circle(
-            n_in_bases, self.red_base_center, self.red_base_radius
-        )
-
+        # 基地周围的智能体位置
+        in_base_positions = np.vstack([
+            self._generate_positions_in_circle(size, center, radius + 500)
+            for size, center, radius in zip(n_in_bases, self.red_core_centers, self.red_core_radiuses)
+        ])
+        
         # 基地外部智能体的位置
-        size = np.array([self.size_x, self.size_y]) * 0.5
-        out_base_positions = (np.random.rand(n_out_bases, 2) - 0.5) * size
+        size = self.red_base['size']
+        center = self.red_base['center']
+        out_base_positions = (np.random.rand(n_out_bases, 2) - 0.5) * size + center
 
         # 合并所有智能体的位置
         positions = np.empty((self.n_reds, 2))
-        positions[:n_in_bases] = in_base_positions
-        positions[n_in_bases:] = out_base_positions
+        positions[:n_out_bases] = out_base_positions
+        positions[n_out_bases:] = in_base_positions
         
         # 生成朝向    
         directions = np.random.uniform(-np.pi, np.pi, self.n_reds)
 
         return positions, directions
-
-    def distribute_blue_agents(self):
+    
+    def generate_red_positions(self):
         """
-        随机将蓝方智能体分配到不同的基地。
+        生成红方智能体的位置和朝向。
         
         返回:
-        group_sizes: 每个基地中蓝方智能体的数量数组。
+        positions: 红方智能体的位置数组，形状为 (n_blues, 2)。
+        directions: 红方智能体的朝向数组，形状为 (n_blues,)。
         """
-        n_groups = len(self.blue_bases)
-        group_sizes = np.random.multinomial(self.n_blues - self.blue_softkill_mode_num, np.ones(n_groups) / n_groups)
-
-        return group_sizes
+        # 初始化位置矩阵
+        size = self.red_base['size']
+        center = self.red_base['center']
+        positions = (np.random.rand(self.n_reds, 2) - 0.5) * size + center
+        
+        # 计算智能体的朝向  
+        directions = np.random.uniform(-np.pi, np.pi, self.n_reds)
+        
+        return positions, directions
 
     def generate_blue_positions(self):
         """
@@ -178,30 +133,12 @@ class DefenseEnv(BaseEnv):
         directions: 蓝方智能体的朝向数组，形状为 (n_blues,)。
         """
         # 初始化位置矩阵
-        positions = np.empty((self.n_blues, 2))
-        
-        # 首先初始化软杀伤载荷的智能体的位置（围绕红方基地外围分布）
-        softkill_positions = self._generate_positions_on_circle(
-            self.blue_softkill_mode_num, 
-            center=self.red_base_center, 
-            radius=self.red_base_radius + 20
-        )
-        
-        # 分配其余智能体到各个蓝方基地
-        group_sizes = self.distribute_blue_agents()
-        
-        # 在各个圆形区域内生成位置
-        other_positions = np.vstack([
-            self._generate_positions_in_circle(size, center=base['center'], radius=base['radius'])
-            for size, base in zip(group_sizes, self.blue_bases)
-        ])
-        
-        # 将生成的位置分配到不同的智能体组
-        positions[self.blue_softkill_mode_mask] = softkill_positions
-        positions[~self.blue_softkill_mode_mask] = other_positions
+        size = self.blue_base['size']
+        center = self.blue_base['center']
+        positions = (np.random.rand(self.n_blues, 2) - 0.5) * size + center
         
         # 计算智能体的朝向  
-        directions = self._calculate_agent_directions(positions, self.red_base_center)
+        directions = np.random.uniform(-np.pi, np.pi, self.n_blues)
         
         return positions, directions
     
@@ -223,23 +160,6 @@ class DefenseEnv(BaseEnv):
         y = center[1] + radii * np.sin(angles)
         return np.vstack([x, y]).T
 
-    def _generate_positions_on_circle(self, n_agents, center, radius):
-        """
-        在一个圆形的边缘生成随机位置。
-
-        参数:
-        n_agents: 生成的位置数量。
-        center: 圆心坐标 (x, y)。
-        radius: 圆的半径。
-
-        返回:
-        positions: 生成的位置数组，形状为 (n_agents, 2)。
-        """
-        angles = np.random.uniform(0, 2 * np.pi, n_agents)
-        x = center[0] + radius * np.cos(angles)
-        y = center[1] + radius * np.sin(angles)
-        return np.vstack([x, y]).T
-
     def _calculate_agent_directions(self, positions, target_center):
         """
         根据位置计算智能体的朝向。
@@ -253,6 +173,7 @@ class DefenseEnv(BaseEnv):
         """
         directions = np.arctan2(target_center[1] - positions[:, 1], target_center[0] - positions[:, 0])
         directions += np.random.uniform(-np.pi/18, np.pi/18, positions.shape[0])
+        
         return directions
     
     def reset(self):
@@ -266,12 +187,13 @@ class DefenseEnv(BaseEnv):
         """
         # 调用父类的 reset 方法以重置基础环境
         super().reset()
-
-        # 初始化威胁区域内的停留时间数组（针对每个蓝方智能体）
-        self.in_threat_zone_times = np.zeros(self.n_blues)
         
-        # 初始化蓝方智能体的批次掩码
-        self._init_blue_mask()
+        # 初始化每个智能体的目标基地
+        self._init_red_target_core()
+        self._init_blue_target_core()
+        
+        # 初始每个高价值区域的状态
+        self._init_red_core_states()
 
         # 获取局部观测值、全局状态和可用动作
         local_obs = self.get_obs()
@@ -280,51 +202,31 @@ class DefenseEnv(BaseEnv):
         
         return local_obs, global_state, available_actions
 
-    def _init_blue_mask(self):
+    def _init_blue_target_core(self):
         """
-        将蓝方智能体分组四个进攻批次
+        给每个蓝方智能体随机选择一个红方高价值区域作为打击目标
+        """        
+        self.blue_target_core_ids = np.random.randint(self.red_core_num, size=self.n_blues)
+        self.blue_target_core_centers = self.red_core_centers[self.blue_target_core_ids]
+        self.blue_target_core_radiuses = self.red_core_radiuses[self.blue_target_core_ids]
         
-        - 第一批次：携带软杀伤载荷的智能体
-        - 第二批次：50%的携带自爆载荷的智能体
-        - 第三批次：50%的携带自爆载荷的智能体
-        - 第四批次：干扰的智能体
+    def _init_red_target_core(self):
         """
-        self.blue_first_mask = self.blue_softkill_mode_mask
-        self.blue_second_mask, self.blue_third_mask = self._split_explode_agents(self.blue_explode_mode_mask, 0.5)
-        self.blue_fourth_mask = self.blue_interfere_mode_mask
+        给每个蓝方智能体随机选择一个红方高价值区域作为打击目标
+        """
+        assert self.red_core_num == 3
+        self.red_target_core_ids = assign_target(self.red_positions, self.red_core_centers)
+        # self.red_target_core_ids = np.random.randint(self.red_core_num, size=self.n_reds)
+        self.red_target_core_centers = self.red_core_centers[self.red_target_core_ids]
+        self.red_target_core_radiuses = self.red_core_radiuses[self.red_target_core_ids]
         
-        # 已经激活的蓝方智能体掩码
-        self.blue_active_mask = np.zeros(self.n_blues, dtype=bool)
+    def _init_red_core_states(self):
+        """
+        初始化每个高价值区域的状态和打击次数
+        """
+        self.red_core_alives = np.ones(self.red_core_num, dtype=bool)
+        self.red_core_attack_num = np.zeros(self.red_core_num)
     
-    def _split_explode_agents(self, explode_mask, split_ratio):
-        """
-        将携带自爆载荷的智能体分成两个批次。
-        
-        参数:
-        - explode_mask: 布尔数组，表示携带自爆载荷的智能体。
-        - split_ratio: 第一个批次占总携带自爆载荷智能体的比例。
-        
-        返回:
-        - first_batch_mask: 布尔数组，表示第一个批次的智能体。
-        - second_batch_mask: 布尔数组，表示第二个批次的智能体。
-        """
-        
-        explode_indices = np.where(explode_mask)[0]
-        np.random.shuffle(explode_indices)
-        
-        group_size = int(len(explode_indices) * split_ratio)
-        
-        first_batch_indices = explode_indices[:group_size]
-        second_batch_indices = explode_indices[group_size:]
-        
-        first_batch_mask = np.zeros(len(explode_mask), dtype=bool)
-        second_batch_mask = np.zeros(len(explode_mask), dtype=bool)
-        
-        first_batch_mask[first_batch_indices] = True
-        second_batch_mask[second_batch_indices] = True
-        
-        return first_batch_mask, second_batch_mask
-        
     def step(self, actions):
         """
         执行环境中的一步操作，更新状态，计算奖励，返回观测、状态、奖励和其他信息。
@@ -411,11 +313,13 @@ class DefenseEnv(BaseEnv):
         flee_or_not = is_in_explode & red_will_explode[nearest_id]
 
         # 计算逃离方向，方向为蓝方位置减去红方位置的向量
-        flee_vec = self.blue_positions - self.red_positions[nearest_id, :]
-        flee_unitvec = flee_vec / np.linalg.norm(flee_vec, axis=1)[:, np.newaxis]
+        flee_directions = self.blue_positions - self.red_positions[nearest_id, :]
+
+        # 计算逃离角度
+        flee_angles = np.arctan2(flee_directions[:, 1], flee_directions[:, 0])
 
         # 计算逃离位置偏移，沿逃离方向移动到自爆范围的边界
-        offsets = flee_unitvec * self.explode_radius
+        offsets = np.stack([np.cos(flee_angles), np.sin(flee_angles)], axis=1) * self.explode_radius
 
         # 计算新的目标位置，将蓝方智能体的位置从红方自爆范围的边缘偏移到新的位置
         targets = self.blue_positions + offsets
@@ -467,136 +371,29 @@ class DefenseEnv(BaseEnv):
 
         return target_positions
     
-    def around_threat_zone(self, will_in_threat, target_positions):
-        """
-        给即将进入警戒区的蓝方智能体分配一个新的目标点，使他们绕开警戒区。
-        
-        参数:
-        will_in_threat: 布尔数组，表示哪些蓝方智能体即将进入警戒区。
-        target_positions: 蓝方智能体的目标位置数组，形状为 (n_blues, 2)。
-        
-        返回:
-        target_positions: 更新后的蓝方智能体目标位置数组。
-        """
-        # 如果没有智能体即将进入威胁区，则提前返回
-        if not any(will_in_threat):
-            return target_positions
-
-        # 生成一个随机角度，默认从北侧突防通道口进入
-        target_angles = np.random.uniform(self.right_sector_theta2, self.left_sector_theta1, size=self.n_blues)
-
-        # 获取蓝方智能体的y坐标
-        positions_y = self.blue_positions[:, 1]
-
-        # 如果智能体在南侧，反转角度，从南侧突防通道口进入
-        target_angles = np.where(positions_y > 0, target_angles, -target_angles)
-
-        # 计算目标位置的偏移量, 基于目标角度和红方基地的半径
-        dx = np.cos(target_angles)
-        dy = np.sin(target_angles)
-        offsets = np.stack([dx, dy], axis=1) * self.red_base_radius
-
-        # 计算新的目标位置，目标位置为红方基地中心点加上偏移量
-        new_targets = self.red_base_center + offsets
-
-        # 更新威胁区域外智能体的目标位置
-        target_positions[will_in_threat] = new_targets[will_in_threat]
-
-        return target_positions
-    
     def is_hit_core_zone(self):
         """
         判断蓝方智能体是否在红方高价值区域内，并更新打击次数和蓝方智能体的存活状态。
         """
         # 计算每个蓝方智能体到红方高价值区域中心的距离
-        dists_to_center = np.linalg.norm(self.blue_positions - self.red_core['center'], axis=1)
+        dists_to_center = np.linalg.norm(self.blue_positions[:, np.newaxis, :] - self.red_core_centers[np.newaxis, :, :], axis=-1)
 
         # 判断自爆载荷的蓝方智能体是否在红方高价值区域内
-        in_red_core = (dists_to_center < self.red_core['radius']) & self.blue_explode_mode_mask
+        in_red_core = (dists_to_center < self.red_core_radiuses[np.newaxis, :]) & self.blue_explode_mode_mask[:, np.newaxis] # (100, 3)
 
         # 计算并更新在红方高价值区域内被打击的蓝方智能体数量
-        self.attack_core_num = np.sum(in_red_core & self.blue_alives)
+        alive_num = np.sum(self.red_core_alives)
+        attack_core_num = np.sum(in_red_core & self.blue_alives[:, np.newaxis], axis=0) # (3,)
+        self.red_core_attack_num += attack_core_num
+        self.red_core_alives[self.red_core_attack_num >= self.max_attack_core_num] = False
+        self.destropy_core_num = alive_num - np.sum(self.red_core_alives)
+        
+        self.attack_core_num = np.sum(attack_core_num)
         self.attack_core_total += self.attack_core_num
 
         # 将在高价值区域内的蓝方智能体标记为死亡
-        self.blue_alives[in_red_core] = False
+        self.blue_alives[np.any(in_red_core, axis=1)] = False
         
-        # 更新激活掩码
-        self.blue_active_mask &= self.blue_alives
-
-    def is_blue_in_threat_zone(self):
-        """
-        判断蓝方智能体是否在红方基地的威胁区域内或即将进入威胁区域，
-        并根据蓝方智能体在威胁区域内的时间进行软杀伤。
-        
-        返回:
-        in_threat_zone: 布尔数组，表示哪些蓝方智能体当前在威胁区域内。
-        will_in_threat_zone: 布尔数组，表示哪些蓝方智能体即将进入威胁区域。
-        """
-
-        # 1. 判断蓝方智能体是否在红方圆形基地内
-        dists_to_center = np.linalg.norm(self.blue_positions - self.red_base_center, axis=1)
-        in_red_base = (dists_to_center < self.red_base_radius) & self.blue_alives
-
-        # 2. 判断蓝方智能体是否在 x 轴的威胁区域内
-        x_positions = self.blue_positions[:, 0]
-        x_in_left = x_positions < self.left_threat_x
-        x_in_right = x_positions > self.right_threat_x
-
-        # 3. 判断蓝方智能体是否在两个扇形区域内
-        vectors_to_center = self.blue_positions - self.red_base_center
-        angles = np.arctan2(vectors_to_center[:, 1], vectors_to_center[:, 0])
-        angles = np.mod(angles + 2 * np.pi, 2 * np.pi)  # 将角度范围限制在 [0, 2π]
-
-        # 左边扇形区域角度判断
-        left_sector_angle_range = np.logical_or(
-            (self.left_sector_theta1 <= self.left_sector_theta2) & 
-            (angles > self.left_sector_theta1) & 
-            (angles < self.left_sector_theta2),
-            (self.left_sector_theta1 > self.left_sector_theta2) & 
-            ((angles > self.left_sector_theta1) | 
-            (angles < self.left_sector_theta2))
-        )
-
-        # 右边扇形区域角度判断
-        right_sector_angle_range = np.logical_or(
-            (self.right_sector_theta1 <= self.right_sector_theta2) & 
-            (angles > self.right_sector_theta1) & 
-            (angles < self.right_sector_theta2),
-            (self.right_sector_theta1 > self.right_sector_theta2) & 
-            ((angles > self.right_sector_theta1) | 
-            (angles < self.right_sector_theta2))
-        )
-
-        # 当前在威胁区域内的蓝方智能体
-        in_threat_zone = (
-            (left_sector_angle_range & x_in_left & in_red_base) | 
-            (right_sector_angle_range & x_in_right & in_red_base)
-        )
-
-        # 判断即将进入威胁区域的蓝方智能体
-        will_in_threat_zone = (
-            (left_sector_angle_range & x_in_left & ~in_red_base) | 
-            (right_sector_angle_range & x_in_right & ~in_red_base)
-        )
-
-        # 更新在威胁区域内的时间
-        self.in_threat_zone_times[in_threat_zone] += 1
-        self.in_threat_zone_times[~in_threat_zone] = 0
-
-        # 毁伤掩码：在威胁区域内停留超过最大时间的智能体将被标记为死亡
-        kill_mask = self.in_threat_zone_times >= self.max_in_threat_zone_time
-        self.blue_alives[kill_mask] = False
-        
-        self.blue_threat_damage_mask = kill_mask
-        self.blue_threat_damage_count = np.sum(kill_mask)
-        self.blue_threat_damage_total += self.blue_threat_damage_count
-        
-        # 更新激活掩码
-        self.blue_active_mask &= self.blue_alives
-
-        return in_threat_zone, will_in_threat_zone
-
     def blue_explode(self):
         """
         判断蓝方智能体是否需要自爆:
@@ -606,7 +403,11 @@ class DefenseEnv(BaseEnv):
         3. 其它情况下不攻击。
         """
         # 初始化蓝方自爆掩码，仅考虑已激活且携带自爆载荷的智能体
-        blue_explode_mask = self.blue_explode_mode_mask & self.blue_active_mask &~self.blue_interfere_damage_mask
+        blue_explode_mask = (
+            self.blue_explode_mode_mask & 
+            self.blue_alives &
+            ~self.blue_interfere_damage_mask
+        )
         
         if not np.any(blue_explode_mask):
             return
@@ -646,9 +447,6 @@ class DefenseEnv(BaseEnv):
         # 存储自爆动作
         self.blue_action[blue_explode_mask, 2] = 1
         
-        # 更新激活掩码
-        self.blue_active_mask &= self.blue_alives
-        
     def blue_softkill(self):
         """
         判断蓝方智能体是否需要开启软杀伤（软杀伤只能开启一次）
@@ -659,7 +457,12 @@ class DefenseEnv(BaseEnv):
         4.其它情况下开启软杀伤
         """
         # 初始化蓝方软杀伤掩码，仅考虑已激活且携带软杀伤载荷的智能体
-        blue_softkill_mask = self.blue_softkill_mode_mask & (self.blue_softkill_time < self.softkill_time) & self.blue_active_mask &~self.blue_interfere_damage_mask
+        blue_softkill_mask = (
+            self.blue_softkill_mode_mask & 
+            (self.blue_softkill_time < self.softkill_time) & 
+            self.blue_alives &
+            ~self.blue_interfere_damage_mask
+        )
         
         if not np.any(blue_softkill_mask):
             return
@@ -675,7 +478,7 @@ class DefenseEnv(BaseEnv):
         red_counts_in_zone = np.sum(red_in_softkill_zone, axis=1)
         
         # 计算蓝方智能体到红方基地中心的距离
-        dists_to_center = np.linalg.norm(self.blue_positions - self.red_base_center, axis=1)
+        dists_to_center = np.linalg.norm(self.blue_positions - self.blue_target_core_centers, axis=1)
         
         # 判断是否满足开启软杀伤的条件并更新掩码
         close_to_base = dists_to_center < 150  # 蓝方距离基地中心小于150米
@@ -710,9 +513,6 @@ class DefenseEnv(BaseEnv):
         # 存储软杀伤动作
         self.blue_action[blue_softkill_mask, 2] = 2
         
-        # 更新激活掩码
-        self.blue_active_mask &= self.blue_alives
-    
     def blue_interfere(self, target_positions):
         """
         判断蓝方智能体是否需要开启干扰
@@ -721,7 +521,11 @@ class DefenseEnv(BaseEnv):
         2.如果在基地150m范围内存在敌机，且可以干扰到（或可以转向干扰到）敌机，则开启干扰
         """
         # 初始化蓝方干扰掩码，仅考虑已激活且携带干扰载荷的智能体
-        blue_interfere_mask = self.blue_interfere_mode_mask & (self.blue_interfere_duration == 0) & self.blue_active_mask & ~self.blue_interfere_damage_mask
+        blue_interfere_mask = (
+            self.blue_interfere_mode_mask & 
+            (self.blue_interfere_duration == 0) & 
+            self.blue_alives & 
+            ~self.blue_interfere_damage_mask)
         
         # 已经开了干扰但未结束的智能体
         blue_interfering_mask = (
@@ -752,7 +556,7 @@ class DefenseEnv(BaseEnv):
         closer_blue_red_mask = self.distances_blue2red < 80 # (M, N)
         
         # 计算红方智能体是否在基地150m范围内
-        dists_to_center = np.linalg.norm(self.red_positions - self.red_base_center, axis=1) # (N, )
+        dists_to_center = np.linalg.norm(self.red_positions - self.red_target_core_centers, axis=1) # (N, )
         red_near_center_mask = dists_to_center < 150 # (N, )
         
         # 条件1：在干扰范围内且距离小于80m的红方智能体
@@ -827,10 +631,14 @@ class DefenseEnv(BaseEnv):
         # 判断哪些蓝方智能体已经完成了干扰或软杀伤操作
         blue_done_interfere_mask = self.blue_interfere_duration == self.interfere_duration
         blue_done_softkill_mask = self.blue_softkill_time == self.softkill_time
-        blue_collide_mask = (blue_done_interfere_mask | blue_done_softkill_mask) & self.blue_active_mask & ~self.blue_interfere_damage_mask
+        blue_collide_mask = (
+            (blue_done_interfere_mask | blue_done_softkill_mask) & 
+            self.blue_alives & 
+            ~self.blue_interfere_damage_mask
+        )
         
         # 计算红方智能体到基地中心的距离
-        red_dists_to_center = np.linalg.norm(self.red_positions - self.red_base_center, axis=1)
+        red_dists_to_center = np.linalg.norm(self.red_positions - self.red_target_core_centers, axis=1)
         
         # 判断红方智能体是否在基地300m范围内以及是否在蓝方智能体的碰撞范围内
         red_near_center_and_collide_zone = (
@@ -872,76 +680,84 @@ class DefenseEnv(BaseEnv):
         self.blue_collide_agent_ids = success_agent_ids
         self.blue_collide_target_ids = success_target_ids
         
-        # 更新激活掩码
-        self.blue_active_mask &= self.blue_alives
-        
-    def activate_blue_agents(self):
+    def _update_blue_target_core(self):
         """
-        根据当前的步数激活相应的蓝方智能体批次。
-        """    
-        blue_masks = [
-            self.blue_first_mask,
-            self.blue_second_mask,
-            self.blue_third_mask,
-            self.blue_fourth_mask
-        ]
+        更新智能体的目标基地：如果目标基地已经被摧毁，则随机选择其它未被摧毁的基地作为打击目标。
+        """
+        # 获取每个蓝方智能体目标基地的状态
+        target_core_alives = self.red_core_alives[self.blue_target_core_ids]
         
-        # 计算当前激活的批次索引
-        index = self._episode_steps // self.interval
+        # 计算需要更新目标的掩码：存活但是目标被摧毁的蓝方智能体
+        mask = self.blue_alives & ~target_core_alives
+        num = np.sum(mask)
         
-        if 0 <= index < len(blue_masks):
-            self.blue_active_mask |= blue_masks[index]
-    
+        if num > 0 and np.any(self.red_core_alives):
+            # 获取未被摧毁的基地索引
+            available_targets = np.where(self.red_core_alives)[0]
+            
+            # 随机选择新的目标基地（允许重复选择）
+            new_targets = np.random.choice(available_targets, size=num, replace=True)
+            
+            # 更新目标基地
+            self.blue_target_core_ids[mask] = new_targets
+            self.blue_target_core_centers[mask] = self.red_core_centers[new_targets]
+            self.blue_target_core_radiuses[mask] = self.red_core_radiuses[new_targets]
+        
     def _init_blue_target_positions(self):
         """
         初始化蓝方每个智能体的目标航迹点
         
-        1. 如果智能体与基地中心的距离大于500m，则朝着半径为距离-100m的圆周上的某个点飞行。
-        2. 如果自爆载荷的智能体与基地中心距离小于500m，则朝着基地中心飞行。
-        3. 如果干扰和软杀伤载荷的智能体与基地中心距离小于500m，则随机飞行。
-        4. 如果干扰载荷的智能体与基地中心距离小于150m，且存在敌机，则朝着最近的敌机飞行。
+        1. 更新智能体的目标基地。
+        2. 对于距离目标基地中心超过500m的智能体，朝距离基地中心500m - 100m的圆周上的某个点飞行。
+        3. 对于距离基地中心小于500m且为自爆载荷的智能体，直接飞向基地中心。
+        4. 对于距离基地中心小于500m且为干扰或软杀伤载荷的智能体，随机飞行。
+        5. 对于距离基地中心小于150m的干扰载荷智能体，如果有敌机存在，则追击最近的敌机。
         """
         dist_threshold = 500 # 距离阈值
         dist_cache = 100     # 距离缓冲，避免直接飞到目标点
         
-        # 初始化目标点，默认目标点为红方基地中心
-        target_positions = np.tile(self.red_base_center, (self.n_blues, 1))
+        # 1.更新智能体的目标基地
+        self._update_blue_target_core()
         
-        # 计算每个智能体到基地中心的位置
-        blue_dists_to_center = np.linalg.norm(self.blue_positions - self.red_base_center, axis=1) # (M, )
+        # 初始化目标位置为基地中心位置
+        target_positions = self.blue_target_core_centers.copy()
         
-        # 生成一个随机角度 [-pi, pi]
+        # 生成一个随机角度 [-pi, pi]，用于随机航迹点的偏移计算
         theta = (np.random.rand(self.n_blues) - 0.5) * 2 * np.pi
-        offsets = np.stack([np.cos(theta), np.sin(theta)], axis=1)  # (M, 2)
+        offsets = np.stack([np.cos(theta), np.sin(theta)], axis=1)  # (n_blues, 2)
         
-        # 1. 对于在基地中心500m范围外的智能体，指定一个目标点
+        # 计算每个蓝方智能体与目标基地中心的距离
+        blue_dists_to_center = np.linalg.norm(self.blue_positions - self.blue_target_core_centers, axis=1) # (M, )
+        
+        # 2. 在目标基地中心500m范围外的智能体，朝着距离中心距离为（距离-100m）的某个随机点飞行。
         mask_outside_threshold = blue_dists_to_center >= dist_threshold
-        target_positions[mask_outside_threshold] = (
-            offsets[mask_outside_threshold] * (blue_dists_to_center[mask_outside_threshold] - dist_cache)[:, np.newaxis]
-        ) + self.red_base_center
+        if np.any(mask_outside_threshold):
+            target_positions[mask_outside_threshold] = (
+                offsets[mask_outside_threshold] * (blue_dists_to_center[mask_outside_threshold] - dist_cache)[:, np.newaxis]
+            ) + self.blue_target_core_centers[mask_outside_threshold]
         
-        # 2. 对于在基地中心500m范围内的自爆载荷智能体，目标点设为基地中心
+        # 3. 在基地中心500m范围内的自爆载荷智能体，直接飞向基地中心
         mask_explode_inside_threshold = np.logical_and(blue_dists_to_center < dist_threshold, self.blue_explode_mode_mask)
-        target_positions[mask_explode_inside_threshold] = self.red_base_center
+        target_positions[mask_explode_inside_threshold] = self.blue_target_core_centers[mask_explode_inside_threshold]
         
-        # 3. 对于在基地中心500m范围内的干扰和软杀伤载荷智能体，指定一个随机目标点
+        # 4. 在基地中心500m范围内的干扰和软杀伤载荷智能体，朝着随机方向飞行
         mask_softkill_or_interfere = np.logical_and(blue_dists_to_center < dist_threshold, ~self.blue_explode_mode_mask)
-        target_positions[mask_softkill_or_interfere] = (
-            offsets[mask_softkill_or_interfere] * np.random.rand(np.sum(mask_softkill_or_interfere), 1) * dist_threshold
-        ) + self.red_base_center
+        if np.any(mask_softkill_or_interfere):
+            random_offsets = np.random.rand(np.sum(mask_softkill_or_interfere), 1) * dist_threshold
+            target_positions[mask_softkill_or_interfere] = (
+                offsets[mask_softkill_or_interfere] * random_offsets
+            ) + self.blue_target_core_centers[mask_softkill_or_interfere]
 
         # 4. 对于在基地中心150m范围内干扰载荷智能体，如果存在敌机，则追击最近的敌机
-        red_dists_to_center = np.linalg.norm(self.red_positions - self.red_base_center, axis=1)
-        red_near_center_mask = (red_dists_to_center < 150) & self.red_alives
         blue_interfere_near_center_mask = (blue_dists_to_center < 150) & self.blue_interfere_mode_mask
         
-        if np.any(red_near_center_mask):
-            dists_blue_to_red = np.where(blue_interfere_near_center_mask[:, np.newaxis], self.distances_blue2red, np.inf)
+        if np.any(blue_interfere_near_center_mask) and np.any(self.red_alives):
+            # 计算干扰载荷智能体与敌机的距离
+            dists_blue_to_red = self.distances_blue2red[blue_interfere_near_center_mask]
             closest_red_indices = np.argmin(dists_blue_to_red, axis=1)
             
             # 更新干扰载荷智能体的目标位置为最近敌机的位置
-            valid_interfering_blues = blue_interfere_near_center_mask & (dists_blue_to_red.min(axis=1) != np.inf)
-            target_positions[valid_interfering_blues] = self.red_positions[closest_red_indices[valid_interfering_blues]]
+            target_positions[blue_interfere_near_center_mask] = self.red_positions[closest_red_indices]
         
         return target_positions
     
@@ -949,11 +765,6 @@ class DefenseEnv(BaseEnv):
         """
         蓝方智能体的 step 函数，执行自爆、威胁区避让、自爆区域逃离等逻辑，并更新位置和方向。
         """
-        if (self._episode_steps % self.interval == 0) and (self._episode_steps // self.interval < 4):
-            self.activate_blue_agents()
-        
-        self.blue_active_mask &= self.blue_alives
-        
         # 初始化目标点，默认为红方基地中心
         target_positions = self._init_blue_target_positions()
         
@@ -968,13 +779,7 @@ class DefenseEnv(BaseEnv):
         
         # 执行蓝方碰撞的逻辑
         self.blue_collide()
-
-        # 判断智能体是否在警戒区或即将进入警戒区
-        is_in_threat, will_in_threat = self.is_blue_in_threat_zone()
         
-        # 逃离威胁区域
-        target_positions = self.flee_threat_zone(is_in_threat, target_positions)
-
         # 逃离自爆范围
         target_positions = self.flee_explode_zone(target_positions)
 
@@ -992,7 +797,7 @@ class DefenseEnv(BaseEnv):
         仅更新存活&激活的智能体。
         """
         # 仅对存活且激活的智能体进行更新
-        active_mask = self.blue_active_mask & self.blue_alives
+        active_mask = self.blue_alives
         
         # 计算期望方向
         dx = target_positions[:, 0] - self.blue_positions[:, 0]
@@ -1036,17 +841,13 @@ class DefenseEnv(BaseEnv):
         
         # 开启干扰奖励：每开启一次干扰，给予2的奖励，鼓励开启干扰
         # open_interfere_reward = 2 * self.red_interfere_count
-        open_interfere_reward = 2 * self.red_interfere_count
+        open_interfere_reward = 5 * self.red_interfere_count
         rewards += open_interfere_reward
         
-        # 开启自爆奖励：每开启一次自爆，给予0的奖励，鼓励开启自爆
+        # 开启自爆奖励：每开启一次自爆，给予0的奖励，鼓励开启
         # open_explode_reward = 0
-        open_explode_reward = 5 * self.red_explode_count
+        open_explode_reward = 3 * self.red_explode_count
         rewards += open_explode_reward
-        
-        # 开启碰撞奖励：每发动一次碰撞，给予2的奖励，鼓励开启碰撞
-        open_collide_reward = 2 * self.red_collide_count
-        rewards += open_collide_reward
         
         # 有效软杀伤奖励：每软杀伤一个蓝方智能体，给予20的奖励
         valid_softkill_reward = 20 * self.blue_softkill_damage_count
@@ -1060,21 +861,17 @@ class DefenseEnv(BaseEnv):
         valid_explode_reward = 10 * self.blue_explode_damage_count
         rewards += valid_explode_reward
         
-        # 有效碰撞奖励：每有效碰撞一个蓝方智能体，给予10的奖励
-        valid_collide_reward = 10 * self.blue_collide_damage_count
-        rewards += valid_collide_reward
-        
         # 无效自爆惩罚：每无效自爆一次，给予-1的惩罚
         # invalid_explode_penalty = -1 * self.red_invalide_explode_count
         invalid_explode_penalty = 0
         rewards += invalid_explode_penalty
         
         # 被软杀伤惩罚：每被软杀伤一个，给予-10的惩罚
-        softkill_damage_penalty = -5 * self.red_softkill_damage_count
+        softkill_damage_penalty = -2 * self.red_softkill_damage_count
         rewards += softkill_damage_penalty
         
         # 被干扰惩罚：每被干扰一个，给予-1的惩罚
-        interfere_damage_penalty = -2 * self.red_interfere_damage_count
+        interfere_damage_penalty = -1 * self.red_interfere_damage_count
         rewards += interfere_damage_penalty
         
         # 被自爆惩罚：每被自爆毁伤一个，给予-5的惩罚
@@ -1086,6 +883,7 @@ class DefenseEnv(BaseEnv):
         rewards += collide_damge_penalty
         
         # 打击基地惩罚： 基地每被打击一次，给予-20的惩罚
+        # base_damge_penalty = -30 * self.attack_core_num - 50 * self.destropy_core_num
         base_damge_penalty = -20 * self.attack_core_num
         rewards += base_damge_penalty if self.reward_base else 0
         
@@ -1199,7 +997,7 @@ class DefenseEnv(BaseEnv):
         info = ""
 
         # 判断红方核心区域是否被摧毁
-        if self.attack_core_total >= self.max_attack_core_num:
+        if np.sum(self.red_core_alives) < 2:
             terminated = True
             win = False
             info = "[Defeat] Base destroyed."
@@ -1224,40 +1022,29 @@ class DefenseEnv(BaseEnv):
 
         return terminated, win, info
     
-    def _init_red_target_positions_old(self):
+    def _update_red_target_core(self):
         """
-        初始化红方智能体的目标航迹点
+        更新智能体的目标基地：如果目标基地已经被摧毁，则随机选择其它未被摧毁的基地作为打击目标。
+        """
+        # 获取每个蓝方智能体目标基地的状态
+        target_core_alives = self.red_core_alives[self.red_target_core_ids]
         
-        1. 如果智能体与基地中心的距离大于500m，则朝着半径为距离-100m的圆周上的某个点飞行。
-        2. 如果智能体与基地中心的距离小于500m，则朝着半径500m圆内的任意一点飞行。
-        """
-        dist_threshold = 500
-        dist_cache = 100
+        # 计算需要更新目标的掩码：存活但是目标被摧毁的蓝方智能体
+        mask = self.red_alives & ~target_core_alives
+        num = np.sum(mask)
+        
+        if num > 0 and np.any(self.red_core_alives):
+            # 获取未被摧毁的基地索引
+            available_targets = np.where(self.red_core_alives)[0]
             
-        # 初始化目标点，默认目标点为红方基地中心
-        target_positions = np.tile(self.red_base_center, (self.n_reds, 1))
-        
-        # 计算每个智能体到基地中心的距离
-        dists_to_center = np.linalg.norm(self.red_positions - self.red_base_center, axis=1)
-        
-        # 生成一个随机角度 [-pi, pi]
-        theta = (np.random.rand(self.n_reds) - 0.5) * 2 * np.pi
-        offsets = np.stack([np.cos(theta), np.sin(theta)], axis=1)
-        
-        # 1.对于在基地中心500m范围外的智能体，指定一个目标点
-        mask_outside_threshold = dists_to_center >= dist_threshold
-        target_positions[mask_outside_threshold] = (
-            offsets[mask_outside_threshold] * (dists_to_center[mask_outside_threshold] - dist_cache)[:, np.newaxis]
-        ) + self.red_base_center
-        
-        # 2.对于在基地中心500m范围内的智能体，指定一个随机目标点
-        mask_inside_threshold = dists_to_center < dist_threshold
-        target_positions[mask_inside_threshold] = (
-            offsets[mask_inside_threshold] * np.random.rand(np.sum(mask_inside_threshold), 1) * dist_threshold
-        ) + self.red_base_center
-        
-        return target_positions 
-    
+            # 随机选择新的目标基地（允许重复选择）
+            new_targets = np.random.choice(available_targets, size=num, replace=True)
+            
+            # 更新目标基地
+            self.red_target_core_ids[mask] = new_targets
+            self.red_target_core_centers[mask] = self.red_core_centers[new_targets]
+            self.red_target_core_radiuses[mask] = self.red_core_radiuses[new_targets]
+            
     def _init_red_target_positions(self):
         """
         初始化红方智能体的目标航迹点
@@ -1266,34 +1053,36 @@ class DefenseEnv(BaseEnv):
         2. 对于在基地内的智能体，随机飞。
         """
         # 缓冲距离
+        dist_threshold = 300
         dist_cache = 100
             
         # 初始化目标点，默认目标点为红方基地中心
-        target_positions = np.tile(self.red_base_center, (self.n_reds, 1))
+        self._update_red_target_core()
+        target_positions = self.red_target_core_centers.copy()
         
         # 计算每个智能体到基地中心的距离
-        dists_to_center = np.linalg.norm(self.red_positions - self.red_base_center, axis=1)
+        dists_to_center = np.linalg.norm(self.red_positions - self.red_target_core_centers, axis=1)
         
         # 生成一个随机角度 [-pi, pi] 和偏移量
         theta = np.random.uniform(-np.pi, np.pi, size=self.n_reds)
         offsets = np.stack([np.cos(theta), np.sin(theta)], axis=1)
         
         # 判断智能体是否在基地外侧
-        mask_outside_base = dists_to_center > self.red_base_radius
+        mask_outside_base = dists_to_center > dist_threshold
         
-        # 1. 对于在基地外侧的智能体，距离缩减 100
+        # 1.对于在基地外侧的智能体，距离缩减 100
         if np.any(mask_outside_base):
             target_positions[mask_outside_base] = (
                 offsets[mask_outside_base] * (dists_to_center[mask_outside_base] - dist_cache)[:, np.newaxis]
-            ) + self.red_base_center
+            ) + self.red_target_core_centers[mask_outside_base]
         
-        # 2. 对于在基地内的智能体，给一个基地内的随机点
+        # 2. 对于在基地内的智能体，给一个随机点
         if np.any(~mask_outside_base):
             target_positions[~mask_outside_base] = (
-                offsets[~mask_outside_base] * np.random.rand(np.sum(~mask_outside_base), 1) * self.red_base_radius
-            ) + self.red_base_center
+                offsets[~mask_outside_base] * np.random.rand(np.sum(~mask_outside_base), 1) * (dist_threshold - 50)
+            ) + self.red_target_core_centers[~mask_outside_base]
             
-        return target_positions
+        return target_positions, mask_outside_base
     
     def _correct_out_of_bounds_positions(self, out_of_bounds_indices, target_positions):
         """
@@ -1331,7 +1120,7 @@ class DefenseEnv(BaseEnv):
         available_actions = np.ones((self.n_reds, self.heading_action_num), dtype=bool)
 
         # 初始化目标点
-        target_positions = self._init_red_target_positions()
+        target_positions, mask_outside_core = self._init_red_target_positions()
 
         # 判断哪些智能体的位置超出边界
         out_of_bounds = (
@@ -1347,8 +1136,9 @@ class DefenseEnv(BaseEnv):
             target_positions = self._correct_out_of_bounds_positions(out_of_bounds_indices, target_positions)
          
         # 获取观测到的最近敌机位置
+        # NOTE: 不用追踪敌机，守护在基地附近即可
         nearest_enemy_indices = self.observed_enemies[:, 0]
-        observe_valid_enemy_indices = np.where(nearest_enemy_indices != -1)[0]
+        observe_valid_enemy_indices = np.where(nearest_enemy_indices != -1 & mask_outside_core)[0]
         
         if observe_valid_enemy_indices.size > 0:
             # 更新观测到敌机的红方智能体的目标位置为最近的敌机位置
@@ -1412,8 +1202,8 @@ class DefenseEnv(BaseEnv):
         """
         渲染突防通道
         """
-        for line in self.transformed_lines:
-            pygame.draw.line(self.screen, (255, 0, 0), line[0], line[1], 2)
+        for line, color in zip(self.transformed_lines, self.lines_color):
+            pygame.draw.line(self.screen, color, line[0], line[1], 1)
     
     def _render_text(self):
         """
@@ -1494,7 +1284,7 @@ class DefenseEnv(BaseEnv):
         )
         
         blue_attack_text = self.font.render(
-            f'Blue Attack Core: [{self.attack_core_num} / {self.attack_core_total}]',
+            f'Blue Attack Core: [{int(self.red_core_attack_num[0])} / {int(self.red_core_attack_num[1])} / {int(self.red_core_attack_num[2])}]',
             True,
             blue
         )
@@ -1528,14 +1318,15 @@ class DefenseEnv(BaseEnv):
         new_dir = np.array([1, -1])
 
         # 应用转换，转换后的线段存储在 self.transformed_lines 中
-        self.transformed_lines = ((self.red_lines - new_center) * new_dir * self.scale_factor).astype(int)
+        self.transformed_lines = ((self.lines - new_center) * new_dir * self.scale_factor).astype(int)
+        self.lines_color = [(0, 0, 255), (255, 0, 0)]
 
     def transform_circles(self):
         """
         将红方核心、基地和蓝方基地的圆形区域从世界坐标转换为屏幕坐标。
         """
         # 初始化转换后的圆心和半径列表
-        circles = [self.red_core, self.red_base] + self.blue_bases
+        circles = self.red_core_ranges
         
         self.transformed_circles_center = [
             self.transform_position(circle['center']) for circle in circles
@@ -1546,39 +1337,27 @@ class DefenseEnv(BaseEnv):
         ]
         
         # 设置可视化属性：圆的线宽和颜色
-        self.num_circles = len(self.blue_bases) + 2
-        self.circles_width = [0] + [2] * (self.num_circles - 1)
-        self.circles_color = [(255, 0, 0)] * 2 + [(0, 0, 255)] * (self.num_circles - 2)
-
-def calculate_sector_theta(pos1, pos2, center):
-    theta1 = np.arctan2(pos1[1] - center[1], pos1[0] - center[0])
-    theta2 = np.arctan2(pos2[1] - center[1], pos2[0] - center[0])
-    
-    # Normalize theta to the range[0, 2*pi]
-    theta1 = (theta1 + 2 * np.pi) % (2 * np.pi)
-    theta2 = (theta2 + 2 * np.pi) % (2 * np.pi)
-
-    return theta1, theta2
+        self.num_circles = self.red_core_num
+        self.circles_width = [0] * self.red_core_num
+        self.circles_color = [(255, 0, 0)] * self.red_core_num
 
 class Arg(object):
     def __init__(self) -> None:
         self.map_name = '100_vs_100'
-        self.scenario_name = 'defense'
+        self.scenario_name = 'defensev2'
         self.episode_length = 400
-        self.use_script = False
+        self.use_script = True
         self.save_sim_data = True
         self.plane_name = "plane_defense"
         self.debug = True
         self.use_group = False
-        self.share_load = True
-        
         self.obs_attack = False
         self.state_attack = False
         self.reward_base = False
         
         self.share_action = True
         
-        self.only_explode = True   # 是否只包含自爆
+        self.only_explode = False   # 是否只包含自爆
         self.shuffle = False       # 是否打乱飞机类型
         
         self.can_attack_factor = 3
@@ -1588,11 +1367,12 @@ class Arg(object):
 if __name__ == "__main__":
 
     args = Arg()
+    env = DefenseV2Env(args)
 
-    env = DefenseEnv(args)
-
-    for i in range(2):
+    for i in range(5):
         local_obs, global_state, available_actions = env.reset()
+        env.render()
+        
         
         import time
         done = True

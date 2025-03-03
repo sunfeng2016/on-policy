@@ -10,6 +10,9 @@ import numpy as np
 import re
 import datetime
 import subprocess
+import csv
+
+from gym import spaces
 
 sys.path.append("/home/ubuntu/sunfeng/MARL/on-policy/")
 os.environ["SDL_VIDEODRIVER"] = "dummy"
@@ -28,7 +31,7 @@ INTERFERE_MODE = 3
 COLLIDE_MODE = 4
 
 class BaseEnv():
-    def __init__(self, args):
+    def __init__(self, args, name=None):
         
         # 初始化场景参数
         self.map_name = args.map_name
@@ -38,7 +41,20 @@ class BaseEnv():
         self.n_reds, self.n_blues = map(int, re.findall(r'\d+', self.map_name))
         self.n_agents = self.n_reds + self.n_blues
         
+        self.use_group = args.use_group     # 是否对智能体按照载荷进行分组
+        self.share_action = args.share_action   # 是否将不同载荷的动作当作一个
+        
+        self.obs_attack = args.obs_attack        # 每个智能体的局部观测中是否包含载荷类型
+        self.state_attack = args.state_attack    # 全局的state中是否包含载荷类型
+        self.reward_base = args.reward_base      # 打击基地是否给惩罚
+        
+        self.name = name if name is not None else "Debug"# 实验名称
+        
         self.debug = args.debug
+        self.save_log = args.save_log
+        
+        self.only_explode = args.only_explode   # 是否只包含自爆
+        self.shuffle = args.shuffle             # 是否打乱飞机类型
         
         self.episode_limit = args.episode_length
         self.use_script = args.use_script
@@ -54,6 +70,10 @@ class BaseEnv():
         self.max_observed_allies = 5
         self.max_observed_enemies = 5
         
+        # 设置高价值格子和低价值格子的数量
+        self.core_grids_num = 0
+        self.comm_grids_num = 0
+        
         # 初始化时间步长
         self._episode_count = self._episode_steps = self._total_steps = 0
         
@@ -62,12 +82,14 @@ class BaseEnv():
         
         # 初始化距离和角度参数
         self._init_capability_params(args)
+        
+        # 初始化动作参数
+        self._init_action_params()
                
         # 初始化观测和状态参数
         self._init_observation_and_state_params()
-                
-        # 初始化动作参数
-        self._init_action_params()
+        # self._init_obs_space()
+        # self._init_state_space()
         
         # 初始化战斗统计参数
         self.battles_game = self.battles_won = self.timeouts = 0
@@ -83,14 +105,18 @@ class BaseEnv():
         
         # 初始化攻击方式/载荷
         self._init_attack_mode()
-    
+        
+        # 初始化log文件
+        if self.save_log:
+            self.log_file = None
+            
     def _init_capability_params(self, args):
         """
         初始化能力参数
         """
         plane_params = get_plane_params(args.plane_name)
         
-        can_attack_factor = 3
+        can_attack_factor = args.can_attack_factor
         
         # 设置速度参数
         self.red_min_vel, self.red_max_vel = plane_params['red_vel']
@@ -128,6 +154,25 @@ class BaseEnv():
         """
         初始化观测和状态参数
         """
+        self.obs_own_feats_size = 4 + (self.attack_mode_num if self.obs_attack else 0)         # x, y, v, phi
+        self.obs_ally_feats_size = 4 + (self.attack_mode_num if self.obs_attack else 0)        # x, y, d, v
+        self.obs_enemy_feats_size = 5 + (self.attack_mode_num if self.obs_attack else 0)       # x, y, d, theta, phi
+        self.obs_size = (self.obs_own_feats_size +
+                         self.obs_ally_feats_size +
+                         self.obs_enemy_feats_size)
+        
+        self.red_state_size = 4 + (self.attack_mode_num if self.state_attack else 0)             # x, y, v, phi
+        self.blue_state_size = 4 + (self.attack_mode_num if self.state_attack else 0)            # x, y, v, phi
+        
+        # 局部观测空间
+        self.observation_space = [self.get_obs_size()] * self.n_reds
+        # 状态空间
+        self.share_observation_space = [self.get_state_size()] * self.n_reds
+        
+    def _init_obs_space(self):
+        """
+        初始化观测空间
+        """    
         self.obs_own_feats_size = 4         # x, y, v, phi
         self.obs_ally_feats_size = 4        # x, y, d, v
         self.obs_enemy_feats_size = 5       # x, y, d, theta, phi
@@ -135,14 +180,20 @@ class BaseEnv():
                          self.obs_ally_feats_size +
                          self.obs_enemy_feats_size)
         
+        # 局部观测空间
+        self.observation_space = [self.get_obs_size()] * self.n_reds
+       
+    def _init_state_space(self):
+        """
+        初始化状态空间
+        """
         self.red_state_size = 4             # x, y, v, phi
         self.blue_state_size = 4            # x, y, v, phi
         
-        # 局部观测空间
-        self.observation_space = [self.get_obs_size()] * self.n_reds
         # 状态空间
         self.share_observation_space = [self.get_state_size()] * self.n_reds
         
+    
     def _init_action_params(self):
         """
         初始化动作参数
@@ -152,7 +203,10 @@ class BaseEnv():
         # 航向类动作数目
         self.heading_action_num = 5
         # 攻击类动作数目
-        self.attack_action_num = 3
+        self.attack_action_num = 3 if self.share_action else 5
+        # self.attack_action_num = 5 # 不攻击、自爆/软毁伤/干扰、碰撞
+        # 攻击载荷数量
+        self.attack_mode_num = 3 # 自爆/软毁伤/干扰
         
         self.acc_action_mid_id = self.acc_action_num // 2
         self.heading_action_mid_id = self.heading_action_num // 2
@@ -171,11 +225,13 @@ class BaseEnv():
         # 攻击动作空间
         self.attack_actions = np.arange(0, self.attack_action_num)
         
-        # 多头多离散动作空间
+        # # 多头多离散动作空间
         self.action_space = [MultiDiscrete([[0, self.acc_action_num-1],
                                             [0, self.heading_action_num-1],
                                             [0, self.attack_action_num-1]])] * self.n_reds
-                
+        
+        # self.action_space = [spaces.Discrete(self.attack_action_num)] * self.n_reds        
+
     def _init_screen_params(self):
         """
         初始化屏幕参数
@@ -205,7 +261,6 @@ class BaseEnv():
         self.screen_interfere_radius = self.interfere_radius * self.scale_factor
         self.screen_collide_radius = self.collide_radius * self.scale_factor
         
-        
     def _init_boundaries(self):
         """
         初始化边界参数
@@ -230,20 +285,31 @@ class BaseEnv():
         为智能体配置不同的攻击模式(自爆、软毁伤、干扰)。
         """
         # 配置比例
-        mode_ratios = {
-            EXPLODE_MODE: 0.8,
-            SOFTKILL_MODE: 0.1,
-            INTERFERE_MODE: 0.1
-        }
+        if self.only_explode:
+            mode_ratios = {
+                EXPLODE_MODE: 1.0,
+                SOFTKILL_MODE: 0.0,
+                INTERFERE_MODE: 0.0
+            }
+        else:
+            mode_ratios = {
+                EXPLODE_MODE: 0.8,
+                SOFTKILL_MODE: 0.1,
+                INTERFERE_MODE: 0.1
+            }
 
         # 初始化红方和蓝方的攻击模式
+        self.red_attack_mode_code, \
         self.red_explode_mode_mask, self.red_softkill_mode_mask, self.red_interfere_mode_mask, \
         self.red_explode_mode_num, self.red_softkill_mode_num, self.red_interfere_mode_num = \
             self._assign_attack_mode(self.n_reds, mode_ratios)
-            
+        
+        self.blue_attack_mode_code, \
         self.blue_explode_mode_mask, self.blue_softkill_mode_mask, self.blue_interfere_mode_mask, \
         self.blue_explode_mode_num, self.blue_softkill_mode_num, self.blue_interfere_mode_num = \
             self._assign_attack_mode(self.n_blues, mode_ratios)
+            
+        self.red_attack_mode_mask = self.red_attack_mode_code.astype(bool).T
         
     def _assign_attack_mode(self, num_agents, mode_ratios):
         """
@@ -254,6 +320,7 @@ class BaseEnv():
         - mode_ratios: 模式配置比例的字典。
         
         返回:
+        - mode_code: 攻击类型的One_hot编码
         - explode_mode_mask: 自爆模式的掩码布尔数组。
         - softkill_mode_mask: 软毁伤模式的掩码布尔数组。
         - interfere_mode_mask: 干扰模式的掩码布尔数组。
@@ -274,14 +341,22 @@ class BaseEnv():
         )
         
         # 打乱模式顺序
-        np.random.shuffle(attack_mode)
+        if self.shuffle:
+            np.random.shuffle(attack_mode)
         
         explode_mode_mask = attack_mode == EXPLODE_MODE
         softkill_mode_mask = attack_mode == SOFTKILL_MODE
         interfere_mode_mask = attack_mode == INTERFERE_MODE
+        
+        # 类型编码
+        mode_code = np.zeros((num_agents, self.attack_mode_num))
+        mode_code[explode_mode_mask, 0] = 1
+        mode_code[softkill_mode_mask, 1] = 1
+        mode_code[interfere_mode_mask, 2] = 1
 
         # 返回掩码和对应数量
         return (
+            mode_code,
             explode_mode_mask, softkill_mode_mask, interfere_mode_mask,
             explode_num, softkill_num, interfere_num
         )
@@ -305,17 +380,6 @@ class BaseEnv():
         
         # 重置攻击统计参数
         self._reset_attack_stats()
-        
-        # 重置每个智能体干扰的时长
-        self.red_interfere_duration = np.zeros(self.n_reds)
-        self.blue_interfere_duration = np.zeros(self.n_blues)
-        
-        # 重置每个智能体软杀伤的次数
-        self.red_softkill_time = np.zeros(self.n_reds)
-        self.blue_softkill_time = np.zeros(self.n_blues)
-        
-        # 记录开启软杀伤时的屏幕位置
-        self.softkill_positions = np.zeros((self.n_agents, 2), dtype=int)
         
         # 数据存储
         self.red_action = np.zeros((self.n_reds, 3))
@@ -390,7 +454,6 @@ class BaseEnv():
         
         # 碰撞特效还需要渲染的帧数
         self.threat_frames_ramaining = np.zeros(self.n_agents)
-        
     
     def _reset_action_mask_and_counter(self):
         """
@@ -424,6 +487,13 @@ class BaseEnv():
         self.red_threat_damage_mask = np.zeros(self.n_reds, dtype=bool)
         self.blue_threat_damage_mask = np.zeros(self.n_blues, dtype=bool)
         
+        # 当前时间步扫描到高价值/普通格子的智能体掩码
+        self.red_scout_core_mask = np.zeros(self.n_reds, dtype=bool)
+        self.red_scout_comm_mask = np.zeros(self.n_reds, dtype=bool)
+        
+        # 当前时间步重复扫描的智能体掩码
+        self.red_scout_repeat_mask = np.zeros(self.n_reds, dtype=bool)
+        
         # 红方发动撞击的智能体id和目标id
         self.red_collide_agent_ids = np.array([])
         self.red_collide_target_ids = np.array([])
@@ -434,6 +504,7 @@ class BaseEnv():
         
         # 红方采用的攻击方式的数量
         self.red_explode_count = 0
+        self.red_invalide_explode_count = 0
         self.red_softkill_count = 0
         self.red_interfere_count = 0
         self.red_collide_count = 0
@@ -464,8 +535,14 @@ class BaseEnv():
         
         # 初始化红方核心区域的被攻击次数
         self.attack_core_num = 0            # 每个时间步红方核心区域被攻击的次数
+        
+        # 侦察高价值区域/普通区域的格子数
+        self.scout_core_num = 0
+        self.scout_comm_num = 0
+        
+        # 摧毁高价值区域的数量
+        self.destropy_core_num = 0
     
-            
     def _reset_basic_state(self):
         """
         重置计数器和基本状态变量
@@ -531,6 +608,21 @@ class BaseEnv():
         # 初始化当前回合红方核心区域被打击的总次数
         self.attack_core_total = 0          # 当前回合红方高价值区域被打击的总次数
         
+        # 侦察高价值区域/普通区域的格子总数
+        self.scout_core_total = 0
+        self.scout_comm_total = 0
+        
+        # 重置每个智能体干扰的时长
+        self.red_interfere_duration = np.zeros(self.n_reds)
+        self.blue_interfere_duration = np.zeros(self.n_blues)
+        
+        # 重置每个智能体软杀伤的次数
+        self.red_softkill_time = np.zeros(self.n_reds)
+        self.blue_softkill_time = np.zeros(self.n_blues)
+        
+        # 记录开启软杀伤时的屏幕位置
+        self.softkill_positions = np.zeros((self.n_agents, 2), dtype=int)
+        
         self._reset_action_mask_and_counter()
         
     def seed(self, seed=None):
@@ -541,19 +633,37 @@ class BaseEnv():
 
     def init_positions(self):
         """
-        随机初始化红蓝双方智能体的位置
+        初始化红蓝双方智能体的位置和朝向，并设置速度。
+        
+        返回:
+        positions: 所有智能体的位置数组，形状为 (n_reds + n_blues, 2)。
+        directions: 所有智能体的朝向数组，形状为 (n_reds + n_blues,)。
+        velocities: 所有智能体的速度数组，形状为 (n_reds + n_blues,)。
         """
-        pass
+        
+        red_positions, red_directions = self.generate_red_positions()
+        blue_positions, blue_directions = self.generate_blue_positions()
+        
+        red_velocities = np.full(self.n_reds, self.red_max_vel)
+        blue_velocities = np.full(self.n_blues, self.blue_max_vel)
+
+        return red_positions, red_directions, red_velocities, blue_positions, blue_directions, blue_velocities
         
     def _perform_attack_actions(self, attack_t):
         """
         执行红方的攻击动作,包括自爆,碰撞和软杀伤
         """
         # 处理攻击动作的掩码
-        explode_mask = (attack_t == 1) & self.red_explode_mode_mask         # 自爆
-        softkill_mask = (attack_t == 1) & self.red_softkill_mode_mask       # 软杀伤
-        interfere_mask = (attack_t == 1) & self.red_interfere_mode_mask     # 干扰
-        collide_mask = (attack_t == 2)                                      # 撞击
+        if self.share_action:
+            explode_mask = (attack_t == 1) & self.red_explode_mode_mask         # 自爆
+            softkill_mask = (attack_t == 1) & self.red_softkill_mode_mask       # 软杀伤
+            interfere_mask = (attack_t == 1) & self.red_interfere_mode_mask     # 干扰
+            collide_mask = (attack_t == 2)
+        else:
+            explode_mask = (attack_t == 1) & self.red_explode_mode_mask         # 自爆
+            softkill_mask = (attack_t == 2) & self.red_softkill_mode_mask       # 软杀伤
+            interfere_mask = (attack_t == 3) & self.red_interfere_mode_mask     # 干扰
+            collide_mask = (attack_t == 4)                                      # 撞击
         
         # 执行攻击动作
         self.red_explode(explode_mask)
@@ -610,6 +720,110 @@ class BaseEnv():
         
         return bad_transition
     
+    def _collect_info(self, bad_transition, res, dones):
+        """
+        汇总环境的各种信息。
+
+        参数:
+        bad_transition: 是否为不良转移。
+        res: 环境的其他结果信息。
+        dones: 当前回合是否结束。
+
+        返回:
+        info: 包含环境信息的字典。
+        """
+        # 如果回合未结束，提前返回简化的信息
+        if not dones:
+            return {
+                "battles_won": self.battles_won,
+                "battles_game": self.battles_game,
+                "battles_draw": self.timeouts,
+                'bad_transition': bad_transition,
+                'won': self.win_counted,
+            }
+        
+        # 汇总红方和蓝方的损伤信息
+        red_kill_total = (
+            self.blue_explode_damage_total +
+            self.blue_softkill_damage_total +
+            self.blue_collide_damage_total
+        )
+        
+        red_damage_total = (
+            self.red_explode_damage_total +
+            self.red_softkill_damage_total +
+            self.red_collide_damage_total
+        )
+
+        # 计算核心信息字典
+        info =  {
+            "episode_count": self._episode_count,
+            "battles_won": self.battles_won,
+            "battles_game": self.battles_game,
+            "battles_draw": self.timeouts,
+            'bad_transition': bad_transition,
+            'episode_length': self._episode_steps,
+            'n_red_alives': np.sum(self.red_alives),
+            'n_blue_alives': np.sum(self.blue_alives),
+            'red_explode_total': self.red_explode_total,
+            'red_explode_damage_total': self.red_explode_damage_total,
+            'red_softkill_total': self.red_softkill_total,
+            'red_softkill_damage_total': self.red_softkill_damage_total,
+            'red_interfere_total': self.red_interfere_total,
+            'red_interfere_damage_total': self.red_interfere_damage_total,
+            'red_collide_total': self.red_collide_total,
+            'red_collide_damage_total': self.red_collide_damage_total,
+            'red_threat_damage_total': self.red_threat_damage_total,
+            'blue_explode_total': self.blue_explode_total,
+            'blue_explode_damage_total': self.blue_explode_damage_total,
+            'blue_softkill_total': self.blue_softkill_total,
+            'blue_softkill_damage_total': self.blue_softkill_damage_total,
+            'blue_interfere_total': self.blue_interfere_total,
+            'blue_interfere_damage_total': self.blue_interfere_damage_total,
+            'blue_collide_total': self.blue_collide_total,
+            'blue_collide_damage_total': self.blue_collide_damage_total,
+            'blue_threat_damage_total': self.blue_threat_damage_total,
+            'red_kill_total': red_kill_total,
+            'red_damage_total': red_damage_total,
+            'attack_core_total': self.attack_core_total,
+            'scout_core_ratio': self.scout_core_total / self.core_grids_num if self.core_grids_num > 0 else 0.0,  # 高价值区域被侦察的比例
+            'scout_comm_ratio': self.scout_comm_total / self.comm_grids_num if self.comm_grids_num > 0 else 0.0,  # 普通区域被侦察的比例
+            'won': self.win_counted,
+            "other": res
+        }
+        
+        # Debug 模式下输出调试信息
+        if self.debug and self.name.endswith("eval"):
+            # print(f"[Debug in SCE {self.name}/{self.timestamp}]: \n {info} \n")
+            
+            if self._episode_count == 1:
+                self.red_explode_total_list = []
+            
+            self.red_explode_total_list.append(self.red_explode_damage_total)
+            if self._episode_count % 32 == 0:
+                print('*'*50, '\n')
+                print(np.mean(np.array(self.red_explode_total_list)))
+                self.red_explode_total_list = []
+        
+        # 日志保存
+        if self.save_log:
+            if self.log_file is None:
+                save_dir = os.path.join(self.directory, f'result/log/{self.scenario_name}/{self.map_name}/{self.name}')
+                os.makedirs(save_dir, exist_ok=True)
+                self.log_file = os.path.join(save_dir, f'{self.scenario_name}_log_{self.timestamp}.csv')
+                
+                # 写入表头
+                with open(self.log_file, mode='w', newline='') as file:
+                    writer = csv.DictWriter(file, fieldnames=info.keys())
+                    writer.writeheader()
+            
+            # 追加写入信息
+            with open(self.log_file, mode='a', newline='') as file:
+                writer = csv.DictWriter(file, fieldnames=info.keys())
+                writer.writerow(info)
+            
+        return info
+    
     def red_explode(self, explode_mask):
         """
         处理红方智能体的自爆逻辑，包括有效和无效自爆的统计，以及对蓝方智能体的影响
@@ -641,6 +855,9 @@ class BaseEnv():
         self.blue_explode_damage_total += self.blue_explode_damage_count
         
         self.blue_alives[self.blue_explode_damage_mask] = False
+        
+        # 统计无效自爆的数量
+        self.red_invalide_explode_count = np.sum(~np.any(blue_in_explode_zone, axis=1))
         
     def red_softkill(self, softkill_mask):
         """
@@ -702,15 +919,17 @@ class BaseEnv():
         
         # 更新红方干扰统计和状态
         self.red_interfere_mask = red_interfere_mask
-        self.red_interfere_count = np.sum(self.red_interfere_duration[red_interfere_mask] == 0) # 首次开干扰
-        self.red_interfere_total += self.red_interfere_count
+        # self.red_interfere_count = np.sum(self.red_interfere_duration[red_interfere_mask] == 0) # 首次开干扰
+        # self.red_interfere_total += self.red_interfere_count
+        self.red_interfere_count = np.sum(self.red_interfere_mask)
+        self.red_interfere_total += np.sum(self.red_interfere_duration[red_interfere_mask] == 0)
         
         self.red_interfere_duration[red_interfere_mask] += 1
         
         # 更新蓝方干扰统计和状态
         self.blue_interfere_damage_mask = np.any(blue_in_interfere_zone, axis=0)
         self.blue_interfere_damage_count = np.sum(self.blue_interfere_damage_mask)
-        self.blue_interfere_damage_total += self.blue_collide_damage_count
+        self.blue_interfere_damage_total += self.blue_interfere_damage_count
             
     def red_collide(self, collide_mask):
         """
@@ -759,13 +978,19 @@ class BaseEnv():
         self.red_collide_agent_ids = success_agent_ids
         self.red_collide_target_ids = success_target_ids
     
-    def step(self, actions):
+    def step(self):
         """
         执行所有智能体的动作，包括攻击和移动，并更新各项状态。
         
         参数：
         actions: 包含所有智能体动作，形状为 (n,3)
                  其中第一列为加速度动作，第二列为航向动作，第三列为攻击动作。        
+        """
+        pass
+    
+    def is_red_in_threat_zone(self):
+        """
+        判断红方智能体是否在威胁区域
         """
         pass
     
@@ -787,6 +1012,9 @@ class BaseEnv():
         
         # 更新红方的位置和方向
         self._update_red_position_and_direction(at, pt)
+        
+        # 判断红方智能体是否在威胁区
+        self.is_red_in_threat_zone()
         
         # 如果需要保存仿真数据，则记录红方的动作信息
         if self.save_sim_data:
@@ -980,9 +1208,11 @@ class BaseEnv():
         alive_mask = self.red_alives
 
         # 填充自身特征
-        # own_feats[alive_mask, 0:2] = self.red_positions[alive_mask] / np.array([self.size_x / 2, self.size_y / 2])
+        own_feats[alive_mask, 0:2] = self.red_positions[alive_mask] / np.array([self.size_x / 2, self.size_y / 2])
         own_feats[alive_mask, 2] = (self.red_velocities[alive_mask] - self.red_min_vel) / (self.red_max_vel - self.red_min_vel)
         own_feats[alive_mask, 3] = self.red_directions[alive_mask] / np.pi
+        if self.obs_attack:
+            own_feats[alive_mask, 4: ] = self.red_attack_mode_code[alive_mask]
 
         # 填充盟友特征
         valid_allies_mask = self.observed_allies != -1
@@ -993,6 +1223,8 @@ class BaseEnv():
         ally_feats[agent_ids, ally_indices, 0:2] = (ally_positions - self.red_positions[agent_ids]) / self.detection_radius
         ally_feats[agent_ids, ally_indices, 2] = self.distance_observed_allies[valid_allies_mask] / self.detection_radius
         ally_feats[agent_ids, ally_indices, 3] = self.red_directions[ally_ids] / np.pi
+        if self.obs_attack:
+            ally_feats[agent_ids, ally_indices, 4: ] = self.red_attack_mode_code[ally_ids]
 
         # 填充敌人特征
         valid_enemies_mask = self.observed_enemies != -1
@@ -1003,7 +1235,9 @@ class BaseEnv():
         enemy_feats[agent_ids, enemy_indices, 0:2] = (enemy_positions - self.red_positions[agent_ids]) / self.detection_radius
         enemy_feats[agent_ids, enemy_indices, 2] = self.distance_observed_enemies[valid_enemies_mask] / self.detection_radius
         enemy_feats[agent_ids, enemy_indices, 3] = self.blue_directions[enemy_ids] / np.pi
-        enemy_feats[agent_ids, enemy_indices, 4] = self.angles_diff_red2blue[agent_ids, enemy_ids] / np.pi
+        enemy_feats[agent_ids, enemy_indices, 4] = self.angles_diff_red2blue[agent_ids, enemy_ids] / (self.view_angle / 2)
+        if self.obs_attack:
+            enemy_feats[agent_ids, enemy_indices, 5: ] = self.blue_attack_mode_code[enemy_ids]
 
         # 将所有特征合并成一个单一的观测数组
         agents_obs = np.concatenate(
@@ -1066,6 +1300,8 @@ class BaseEnv():
         red_state[alive_reds, 0:2] = normalized_red_positions[alive_reds]
         red_state[alive_reds, 2] = normalized_red_velocities[alive_reds]
         red_state[alive_reds, 3] = normalized_red_directions[alive_reds]
+        if self.state_attack:
+            red_state[alive_reds, 4: ] = self.red_attack_mode_code[alive_reds]
 
         # 初始化状态数组并填充蓝方状态
         blue_state = np.zeros((self.n_blues, self.blue_state_size), dtype=np.float32)
@@ -1073,6 +1309,8 @@ class BaseEnv():
         blue_state[alive_blues, 0:2] = normalized_blue_positions[alive_blues]
         blue_state[alive_blues, 2] = normalized_blue_velocities[alive_blues]
         blue_state[alive_blues, 3] = normalized_blue_directions[alive_blues]
+        if self.state_attack:
+            blue_state[alive_blues, 4: ] = self.blue_attack_mode_code[alive_blues]
 
         # 扁平化并连接红方和蓝方的状态数组
         state = np.concatenate((red_state.flatten(), blue_state.flatten()))
@@ -1088,12 +1326,15 @@ class BaseEnv():
         """
         # 获取加速类动作的 available_actions
         available_acc_actions = self.get_avail_acc_actions()
+        # assert np.sum(~np.any(available_acc_actions, axis=1)) == 0
 
         # 获取航向类动作的 available_actions
         available_heading_actions = self.get_avail_heading_actions()
+        # assert np.sum(~np.any(available_heading_actions, axis=1)) == 0
 
         # 获取攻击类动作的 available_actions
         available_attack_actions = self.get_avail_attack_actions()
+        # assert np.sum(~np.any(available_attack_actions, axis=1)) == 0
 
         # 将三类动作拼起来
         agent_avail_actions = np.hstack((available_acc_actions, available_heading_actions, available_attack_actions))
@@ -1214,8 +1455,19 @@ class BaseEnv():
         available_actions[:, 0] = self.get_avail_no_op_actions()
 
         # 自爆、软杀伤、干扰和碰撞动作的可用性
-        available_actions[:, 1] = (self.get_avail_explode_action() | self.get_avail_softkill_action() | self.get_avail_interfere_action())
-        available_actions[:, 2] = self.get_avail_collide_action()
+        if self.share_action:
+            available_actions[:, 1] = (self.get_avail_explode_action() | self.get_avail_softkill_action() | self.get_avail_interfere_action())
+            available_actions[:, 2] = self.get_avail_collide_action()
+        else:
+            available_actions[:, 1] = self.get_avail_explode_action() 
+            available_actions[:, 2] = self.get_avail_softkill_action()
+            available_actions[:, 3] = self.get_avail_interfere_action()
+            available_actions[:, 4] = self.get_avail_collide_action()
+
+        # if np.any(available_actions[:, 1]) and self._episode_count > 0:
+        #     print()
+
+        # available_actions[~self.red_alives, :] = 1
 
         return available_actions
     
@@ -1244,8 +1496,8 @@ class BaseEnv():
         # 判断自爆动作的可用性
         available_actions = np.any(blue_in_red_explode_zone, axis=1) & self.red_explode_mode_mask
         
-        # 被干扰的智能体不能自爆
-        available_actions[self.red_interfere_damage_mask] = False
+        # 被干扰/在干扰的智能体不能自爆
+        available_actions[self.red_interfere_damage_mask | self.red_interfering] = False
 
         return available_actions
     
@@ -1263,8 +1515,8 @@ class BaseEnv():
         # 判断软杀伤动作的可用性
         available_actions = np.any(blue_in_red_softkill_zone, axis=1) & self.red_softkill_mode_mask & (self.red_softkill_time < self.softkill_time)
         
-        # 被干扰的智能体不能软杀伤
-        available_actions[self.red_interfere_damage_mask] = False
+        # 被干扰/在干扰的智能体不能软杀伤
+        available_actions[self.red_interfere_damage_mask | self.red_interfering] = False
         
         return available_actions
     
@@ -1790,29 +2042,6 @@ class BaseEnv():
 
         # 将动作组合成完整的行动列表
         actions = np.column_stack((acc_actions, heading_actions, attack_actions))
-
-        return actions
-
-    
-    def random_policy_red(self):
-        """
-        为红方智能体生成随机策略，包括加速、航向和攻击动作。
-
-        返回:
-        actions: 动作数组，形状为 (n_reds, 3)，每行包含一个智能体的加速、航向和攻击动作。
-        """
-        # 随机选择加速动作
-        acc_action = np.random.randint(0, self.acc_action_num, size=self.n_reds)
-
-        # 随机选择航向动作
-        heading_action = np.random.randint(0, self.heading_action_num, size=self.n_reds)
-
-        # 按概率随机选择攻击动作
-        attack_probabilities = np.array([0.9, 0.02, 0.08, 0])  # 攻击动作的概率分布
-        attack_action = np.random.choice(np.arange(self.attack_action_num), size=self.n_reds, p=attack_probabilities)
-
-        # 将加速、航向和攻击动作组合成一个动作数组
-        actions = np.column_stack((acc_action, heading_action, attack_action))
 
         return actions
     
