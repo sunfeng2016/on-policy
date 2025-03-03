@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from onpolicy.algorithms.utils.util import init, check
 from onpolicy.algorithms.utils.cnn import CNNBase
-from onpolicy.algorithms.utils.mlp import MLPBase
+from onpolicy.algorithms.utils.mlp import MLPBase, MLPBase_Critic
 from onpolicy.algorithms.utils.rnn import RNNLayer
 from onpolicy.algorithms.utils.act import ACTLayer
 from onpolicy.algorithms.utils.popart import PopArt
@@ -55,13 +55,13 @@ class R_Actor(nn.Module):
         :return action_log_probs: (torch.Tensor) log probabilities of taken actions.
         :return rnn_states: (torch.Tensor) updated RNN hidden states.
         """
-        obs = check(obs).to(**self.tpdv)
-        rnn_states = check(rnn_states).to(**self.tpdv)
-        masks = check(masks).to(**self.tpdv)
+        obs = check(obs).to(**self.tpdv)                                     # (n_r, n_a, d)      (n_r*n_a, d)
+        rnn_states = check(rnn_states).to(**self.tpdv)                       # (n_r, n_a, 1, d)   (n_r*n_a, 1, d)
+        masks = check(masks).to(**self.tpdv)                                 # (n_r, n_a, 1)
         if available_actions is not None:
-            available_actions = check(available_actions).to(**self.tpdv)
+            available_actions = check(available_actions).to(**self.tpdv)     # (n_r, n_a, d)
 
-        actor_features = self.base(obs)
+        actor_features = self.base(obs)                                      # (n_r, n_a, d)
 
         if self._use_naive_recurrent_policy or self._use_recurrent_policy:
             actor_features, rnn_states = self.rnn(actor_features, rnn_states, masks)
@@ -138,7 +138,7 @@ class R_Critic(nn.Module):
 
         cent_obs_shape = get_shape_from_obs_space(cent_obs_space)
         # base = CNNBase if len(cent_obs_shape) == 3 else MLPBase
-        base = MLPBase
+        base = MLPBase_Critic
         self.base = base(args, cent_obs_shape)
 
         if self._use_naive_recurrent_policy or self._use_recurrent_policy:
@@ -203,7 +203,7 @@ class R_Critic_Mix(nn.Module):
         
         self.n_agents = args.num_agents
 
-        self.mlp_base = MLPBase(args, self.cent_obs_mlp_shape)
+        self.mlp_base = MLPBase_Critic(args, self.cent_obs_mlp_shape)
         self.cnn_base = CNNBase(args, self.cent_obs_cnn_shape)
 
         if self._use_naive_recurrent_policy or self._use_recurrent_policy:

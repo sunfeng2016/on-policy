@@ -120,12 +120,26 @@ class R_MAPPO():
                                                                               masks_batch, 
                                                                               available_actions_batch,
                                                                               active_masks_batch)
+        '''
+        mask = actions_batch[:, 2] != 0
+        adv_targ_masked = adv_targ[mask]
+        action_log_probs_masked = action_log_probs[mask]
+        old_action_log_probs_batch_masked = old_action_log_probs_batch[mask]
+        imp_weights = torch.exp(action_log_probs_masked - old_action_log_probs_batch_masked)
+        
+        surr1 = imp_weights * adv_targ_masked
+        surr2 = torch.clamp(imp_weights, 1.0 - self.clip_param, 1.0 + self.clip_param) * adv_targ_masked
+        
+        policy_action_loss = -torch.sum(torch.min(surr1, surr2), dim=-1, keepdim=True).mean()
+        '''
+        
         # actor update
         imp_weights = torch.exp(action_log_probs - old_action_log_probs_batch)
 
         surr1 = imp_weights * adv_targ
         surr2 = torch.clamp(imp_weights, 1.0 - self.clip_param, 1.0 + self.clip_param) * adv_targ
 
+        
         if self._use_policy_active_masks:
             policy_action_loss = (-torch.sum(torch.min(surr1, surr2),
                                              dim=-1,
@@ -134,11 +148,13 @@ class R_MAPPO():
             policy_action_loss = -torch.sum(torch.min(surr1, surr2), dim=-1, keepdim=True).mean()
 
         policy_loss = policy_action_loss
-
+        
         self.policy.actor_optimizer.zero_grad()
 
         if update_actor:
             (policy_loss - dist_entropy * self.entropy_coef).backward()
+            
+            
 
         if self._use_max_grad_norm:
             actor_grad_norm = nn.utils.clip_grad_norm_(self.policy.actor.parameters(), self.max_grad_norm)
